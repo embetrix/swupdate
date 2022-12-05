@@ -738,6 +738,10 @@ As a general rule, swupdate doesn't copy out a file if the destination path
 doesn't exists. This behavior could be changed using the special property
 "create-destination".
 
+As another rule, the archive handler doesn't clean the destination path
+before unpacking an archive. This behavior could be changed using the special property
+"clean-destination".
+
 As another general rule, the raw file handler installs the file directly to the
 specified path. If the target file already exists and the raw file handler
 is interrupted, the existing file may be replaced by an empty or partially

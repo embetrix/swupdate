@@ -298,6 +298,19 @@ static int install_archive_image(struct img_type *img,
 		}
 	}
 
+#ifndef CONFIG_NOCLEANUP
+	/*
+	 * Check if destination must be cleaned before
+	 */
+	if (strtobool(dict_get_value(&img->properties, "clean-destination"))) {
+		ret = swupdate_remove_directory(path, true);
+		if (ret < 0) {
+			ERROR("I cannot clean path %s: %s", path, strerror(errno));
+			exitval = -EFAULT;
+			goto out;
+		}
+	}
+#endif
 	/*
 	 * Change to directory where tarball must be extracted
 	 */

@@ -171,7 +171,29 @@ static int _remove_directory_cb(const char *fpath, const struct stat *sb,
 	return remove(fpath);
 }
 
-int swupdate_remove_directory(const char* path)
+static int _remove_subdirectory_cb(const char *fpath, const struct stat *sb,
+								int typeflag, struct FTW *ftwbuf)
+{
+	(void)sb;
+	(void)typeflag;
+	(void)ftwbuf;
+	/* Skip top level folder */
+	if (ftwbuf->level > 0) {
+		return remove(fpath);
+	}
+	return 0;
+}
+
+int swupdate_remove_directory(const char* path, bool keep)
+{
+	if (keep)
+		return nftw(path, _remove_subdirectory_cb, 64, FTW_DEPTH | FTW_PHYS);
+	else
+		return nftw(path, _remove_directory_cb, 64, FTW_DEPTH | FTW_PHYS);
+
+}
+
+int swupdate_remove_tmp_directory(const char* path)
 {
 	char* dpath;
 	int ret;

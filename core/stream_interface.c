@@ -659,8 +659,8 @@ void *network_initializer(void *data)
 		cleanup_files(software);
 
 #ifndef CONFIG_NOCLEANUP
-		swupdate_remove_directory(SCRIPTS_DIR_SUFFIX);
-		swupdate_remove_directory(DATADST_DIR_SUFFIX);
+		swupdate_remove_tmp_directory(SCRIPTS_DIR_SUFFIX);
+		swupdate_remove_tmp_directory(DATADST_DIR_SUFFIX);
 #endif
 
 		pthread_mutex_lock(&stream_mutex);

@@ -878,6 +878,9 @@ permissions (except +x, always preserved) and extended attributes.
 The property `create-destination` can be set to the string `true` to have swupdate create
 the destination path before extraction.
 
+The property `clean-destination` can be set to the string `true` to have swupdate clean
+the destination path before extraction.
+
 ::
 
                 files: (
@@ -889,6 +892,7 @@ the destination path before extraction.
                                 installed-directly = true;
                                 properties: {
                                         create-destination = "true";
+                                        clean-destination  = "true";
                                 }
                         }
                 );
