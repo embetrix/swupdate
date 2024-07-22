@@ -11,14 +11,21 @@ import logging
 import os
 import sys
 import string
+import ssl
 from swupdateclient import __about__
 from typing import List, Optional, Tuple, Union
+from urllib3.exceptions import InsecureRequestWarning
 
 
 import requests
 from termcolor import colored
 import websockets
 
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+
+sslcontext = ssl.create_default_context()
+sslcontext.check_hostname = False
+sslcontext.verify_mode = ssl.CERT_NONE
 
 LOGGING_MAPPING = {
     "3": logging.ERROR,
@@ -58,8 +65,8 @@ class ColorFormatter(logging.Formatter):
 class SWUpdater:
     """Python helper class for SWUpdate"""
 
-    url_upload = "http://{}:{}{}/upload"
-    url_status = "ws://{}:{}{}/ws"
+    url_upload = "https://{}:{}{}/upload"
+    url_status = "wss://{}:{}{}/wss"
 
     def __init__(
         self,
@@ -87,7 +94,7 @@ class SWUpdater:
         self._logger.info("Waiting for messages on websocket connection")
         try:
             async with websockets.connect(
-                self.url_status.format(self._host_name, self._port, self._path)
+                self.url_status.format(self._host_name, self._port, self._path), ssl=sslcontext
             ) as websocket:
                 while True:
                     try:
@@ -121,7 +128,7 @@ class SWUpdater:
 
     def sync_upload(self, swu_file, timeout):
         return requests.post(
-            self.url_upload.format(self._host_name, self._port, self._path),
+            self.url_upload.format(self._host_name, self._port, self._path), verify=False,
             files={"file": swu_file},
             headers={"Cache-Control": "no-cache"},
             timeout=timeout,
