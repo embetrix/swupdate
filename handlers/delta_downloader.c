@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2021
- * Stefano Babic, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -31,8 +31,11 @@
 #include <zlib.h>
 #include <channel.h>
 #include <channel_curl.h>
+#include "swupdate_dict.h"
 #include "delta_handler.h"
 #include "delta_process.h"
+#include "swupdate_settings.h"
+#include "server_utils.h"
 
 /*
  * Structure used in curl callbacks
@@ -196,6 +199,15 @@ int start_delta_downloader(const char __attribute__ ((__unused__)) *fname,
 		channel_data.dwlwrdata = wrdata_callback;
 		channel_data.range = &req->data[req->urllen + 1];
 		channel_data.user = &priv;
+
+		swupdate_cfg_handle handle;
+		swupdate_cfg_init(&handle);
+
+		if (swupdate_cfg_read_file(&handle, fname) == 0) {
+			read_module_settings(&handle, "delta", channel_settings, &channel_data);
+		}
+
+		swupdate_cfg_destroy(&handle);
 
 		if (channel->open(channel, &channel_data) == CHANNEL_OK) {
 			transfer = channel->get_file(channel, (void *)&channel_data);

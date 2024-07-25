@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2013 Stefano Babic <sbabic@denx.de>
+# SPDX-FileCopyrightText: 2013 Stefano Babic <stefano.babic@swupdate.org>
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -116,17 +116,9 @@ config LUASCRIPTHANDLER
 	  Handler to be called for pre- and post scripts
 	  written in Lua.
 
-config HANDLER_IN_LUA
-	bool "Handlers in Lua"
-	depends on LUASCRIPTHANDLER
-	default n
-	help
-	  Allow to write own handlers in Lua.
-	  They are loaded at the start-up.
-
 config EMBEDDED_LUA_HANDLER
 	bool "Embed Lua handler in SWUpdate binary"
-	depends on HANDLER_IN_LUA
+	depends on LUA
 	default n
 	help
 	  Embed the Lua handler source code file into the
@@ -147,6 +139,17 @@ config EMBEDDED_LUA_HANDLER_SOURCE
 	help
 	  Path to the Lua handler source code file to be
 	  embedded into the SWUpdate binary.
+
+
+config EMMC_HANDLER
+	bool "eMMC handler"
+	default n
+	help
+	  This handler allows to switch the boot partitions via
+	  the eMMC internal CSD register. One common use case is to 
+	  upgrade the bootloader, using the two hardware partitions
+	  with a dual-copy concept. This guarantees that the upgrade
+	  is power-cut safe.
 
 config RAW
 	bool "raw"
@@ -204,21 +207,19 @@ config SHELLSCRIPTHANDLER
 config SWUFORWARDER_HANDLER
 	bool "SWU forwarder"
 	depends on HAVE_LIBCURL
-	depends on HAVE_JSON_C
 	depends on HAVE_LIBWEBSOCKETS
 	depends on HAVE_URIPARSER
 	select CHANNEL_CURL
-	select JSON
 	default n
 	help
-	  This allows to build a chain of updater. A
-	  SWU can contains other SWUs for other systems.
-	  The handler takes a list of URLs and forward the
+	  This allows one to build a chain of updater. A
+	  SWU can contain other SWUs for other systems.
+	  The handler takes a list of URLs and forwards the
 	  embedded SWU to the other devices using the
-	  Webserver REST API.
+	  webserver REST API.
 
-comment "swuforward handler needs json-c and libcurl"
-	depends on !HAVE_JSON_C || !HAVE_LIBCURL
+comment "swuforward handler needs libcurl"
+	depends on !HAVE_LIBCURL
 
 comment "swuforward handler needs websockets and uriparser"
 	depends on !HAVE_LIBWEBSOCKETS || !HAVE_URIPARSER
@@ -228,10 +229,10 @@ config SSBLSWITCH
 	depends on MTD
 	default n
 	help
-	  This handler allows to switch between two software set
+	  This handler allows one to switch between two software sets
 	  based on an administration block stored in flash (CFI interface).
-	  It works like the switch of UBI and allow to switch in an atomic
-	  way between two software set. It can be used to reliable update
+	  It works like the switch of UBI and allows one to switch in an atomic
+	  way between two software sets. It can be used to reliably update
 	  a second stage bootloader.
 
 config UBIVOL

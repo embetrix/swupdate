@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 =============================================
@@ -323,7 +323,7 @@ For a script handler written in Lua, the prototype is
         --- Lua Handler.
         --
         --- @param  image     img_type  Lua equivalent of `struct img_type`
-        --- @param  scriptfn  string    Type, one of `preinst` or `postinst` 
+        --- @param  scriptfn  string    Type, one of `preinst` or `postinst`
         --- @return number              # 0 on success, 1 on error
         function lua_handler(image, scriptfn)
             ...
@@ -457,6 +457,84 @@ image, this is not implemented as it carries some security
 implications since the behavior of SWUpdate is changed
 dynamically.
 
+Shell script handler
+--------------------
+
+This handler allows to run a shell script thta is packed into the SWU. Please note
+that running a shell script opens a set of different security issues. Shell scripts
+are supported due to their large acceptance, but you should prefer Lua Scripts.
+
+SWUpdate will run the binary shell "/bin/sh" to execute the script.
+
+Lua script handler
+------------------
+
+A Lua Script handler runs a script in Lua language. There are two possible ways to run the
+script:
+
+        - local: the script runs in own (isolated) Lua state that is created for the script.
+          The script has access only to function defined inside the script or functions
+          provided by external libraries, like the internal swupdate library called via
+          "require(swupdate)".
+        - global: SWUpdate create a Lua state at the beginning of an Update and this is
+          valid until the update is terminated. In this case, the script has access to any function
+          and structure that was defined during the update. For example, a function
+          can be defined inside sw-description, and the script can call it.
+
+As default, each script runs in isolated / local Lua state. If the property "global-state" is set,
+then the common LUa state used for each Update transaction is taken.
+
+Scripts ran in isolated context in previous versions. SWUpdate allocates a new
+Lua state, and import the basic libraries before loading the script. A
+script is then isolated, but it cannot access to function already
+loaded, or it is not possible to reuse functions from 2 or more scripts.
+
+With the introduction of a per installation Lua state, Lua scripts can
+call functions already defined in previous scripts, or defined in
+sw-description. Because when a script is loaded, existing functions with the same name are overwritten,
+it was decided that functions in scripts must be unique, that is each function should be declared just
+once during an installation process.
+
+This means that for global state, sw-description should contain the name of the function for each step
+(pre- , postinstall or postfailure) that should be called: the names preinst, postinst and postfailure are
+still valid in case the script runs with isolated state.
+
+This allows also to load a script without executing if no functions are defined, and functions in the script
+can be called by later scripts.
+
+Note that the handler will load the script in case of global state just once during the "preinstall" call.
+Later, it is assumed that functions will be already available.
+
+
+Example:
+
+::
+
+        scripts: (
+            {
+                filename = "testscript.lua";
+                type = "lua";
+                properties: {
+                    global-state = "true";
+                    preinstall = "pretest1";
+                }
+            },
+            {
+                filename = "test2script.lua";
+                type = "lua";
+                properties: {
+                    global-state = "true";
+                    postinstall = "posttest2";
+                    postfailure = "failure";
+                }
+        }
+
+Two scripts are defined. Both are using the global Lua state.
+Functions in test2script can find and run functions defined in testscript.lua,
+because both are belonging to the same context. When preinstall scripts are called, only the function
+"pretest1" from the first script is called, because no function name is defined for this step with
+the following scripts.
+
 Remote handler
 --------------
 
@@ -549,6 +627,49 @@ the SWU forwarder:
 			};
 		});
 
+The SWU forwarder can be used as generic uploader to an URL. This is requires to enable Lua support.
+The back channel should still run via Websocket, if the connected server should communicate a progress status.
+The handler allows to link an own Lua code that is able to parse the incoming data, and
+report an error. The `properties field` should contain the name of the Lua function that
+should be called to parse the answer from the remote system. Note that the data passed to Lua
+is converted to a string (and null terminated).
+
+::
+
+	images: (
+		{
+			filename = "image.swu";
+			type = "swuforward";
+
+			properties: {
+				url = ["http://192.168.178.41", "http://192.168.178.42];
+                                parser-function = "parse_answer";
+			};
+		});
+
+The parser function should be already loaded. The Lua function receives as input a string with the data
+received via the Websocket back channel. The function will read the data and return a single scalar value
+of swupdate_status, that is one of swupdate.RECOVERY_STATUS.*.
+Example:
+
+::
+
+	function parse_answer(s)
+		if string.match (s, 'SUCCESS') then
+			return swupdate.RECOVERY_STATUS.SUCCESS
+		end
+		if string.match (s, 'FAILURE') then
+			return swupdate.RECOVERY_STATUS.FAILURE
+		end
+
+		return swupdate.RECOVERY_STATUS.RUN
+
+	end";
+
+The handler evaluates the return value, and stops when one of SUCCESS or FAILURE is returned.
+
+If no parser-function is passed, the handler will run the internal parser used to connect
+remote SWUpdate systems, and expects to see a JSON message sent by the Mongoose Webserver.
 
 rdiff handler
 -------------
@@ -806,25 +927,56 @@ Properties ``size`` and ``offset`` are optional, all the other properties are ma
     +-------------+----------+----------------------------------------------------+
 
 
-Rawcopy handler
+Copy handler
 ---------------
 
-The rawcopy handler copies one source to a destination. It is a script handler, and no artifact in the SWU is associated
+The copy handler copies one source to a destination. It is a script handler, and no artifact in the SWU is associated
 with the handler.  It can be used to copy configuration data, or parts that should be taken by the current installation.
-It requires the mandatory  property (`copyfrom`), while device contains the destination path. 
+It requires the mandatory  property (`copyfrom`), while device contains the destination path.
 The handler performs a byte copy, and it does not matter which is the source - it can be a file or a partition.
 An optional `type` field can set if the handler is active as pre or postinstall script. If not set, the handler
 is called twice.
+
+.. table:: Attributes for copy handler
+
+    +-------------+----------+----------------------------------------------------+
+    |  Name       |  Type    |  Description                                       |
+    +=============+==========+====================================================+
+    | device      | string   | If set, it is the destination.                     |
+    +-------------+----------+----------------------------------------------------+
+    | type        | string   | One of "preinstall" or "postinstall"               |
+    +-------------+----------+----------------------------------------------------+
+
+
+.. table:: Properties for copy handler
+
+    +-------------+----------+----------------------------------------------------+
+    |  Name       |  Type    |  Description                                       |
+    +=============+==========+====================================================+
+    | size        | string   | Data size (in bytes) to be copied.                 |
+    |             |          | If 0 or not set, the handler will try to find the  |
+    |             |          | size from the device.                              |
+    +-------------+----------+----------------------------------------------------+
+    | chain       | string   | Handler to be called to install the data read      |
+    |             |          | from the "copyfrom" source.                        |
+    +-------------+----------+----------------------------------------------------+
+    | recursive   | string   | Recursive copy if copyfrom is a directory          |
+    |             |          | ("true" or "false")                                |
+    +-------------+----------+----------------------------------------------------+
+    | create-     | string   | Create the destination path if it does not exist   |
+    | destination |          | ("true" or "false")                                |
+    +-------------+----------+----------------------------------------------------+
 
 ::
 
         scripts : (
                 {
                 device = "/dev/mmcblk2p1";
-                type = "rawcopy";
+                type = "copy";
                 properties : {
                         copyfrom = "/dev/mmcblk2p2";
                         type = "postinstall";
+                        chain = "raw";
                 }
         }
 
@@ -958,13 +1110,18 @@ supported:
    | fstype      | string   | Optional filesystem type to be created on the      |
    |             |          | partition. If no fstype key is given, no file      |
    |             |          | will be created on the corresponding partition.    |
-   |             |          | vfat / ext2 / ext3 /ext4 file system is supported  |
+   |             |          | vfat / ext2 / ext3 /ext4 / btrfs                   |
+   |             |          | file system is supported                           |
    +-------------+----------+----------------------------------------------------+
    | partuuid    | string   | The partition UUID (GPT only). If omitted, a UUID  |
-   |             |          | will be generated automatically.			 |
+   |             |          | will be generated automatically.                   |
    +-------------+----------+----------------------------------------------------+
    | flag        | string   | The following flags are supported:                 |
-   |             |          | Dos Partition : "boot" set bootflag		 |
+   |             |          | Dos Partition : "boot" set bootflag                |
+   +-------------+----------+----------------------------------------------------+
+   | force       | string   | If set to "true", existing file-system shall be    |
+   |             |          | overwritten uncoditionally.                        |
+   |             |          | Default value is "false".                          |
    +-------------+----------+----------------------------------------------------+
 
 
@@ -1061,8 +1218,8 @@ gpt partition swap
 ------------------
 
 There is a handler gptswap that allow to swap gpt partitions after all the images were flashed.
-This handler only swap the name of the partition. It coud be usefull for a dual bank strategy.
-This handler is a script for the point of view of swupdate, so the node that provide it should
+This handler only swaps the name of the partition. It coud be useful for a dual bank strategy.
+This handler is a script for the point of view of swupdate, so the node that provides it should
 be added in the section scripts.
 
 Simple example:
@@ -1087,7 +1244,7 @@ Diskformat Handler
 This handler checks if the device already has a file system of the specified
 type. (Available only if CONFIG_DISKFORMAT is set.)
 If the file system does not yet exist, it will be created.
-In case an existing file system shall be overwitten, this can be achieved
+In case an existing file system shall be overwritten, this can be achieved
 by setting the property ``force`` to ``true``.
 
 ::
@@ -1124,6 +1281,30 @@ found on the device. It is a partition handler and it runs before any image is i
                                    "18e12df1-d8e1-4283-8727-37727eb4261d"];
 		}
 	});
+
+BTRFS Handler
+-------------
+
+This handler is activated if support for BTRFS is on. It allows to created and delete subvolumes
+during an update.
+
+::
+
+	partitions: (
+	{
+		type = "btrfs";
+		device = "/dev/loop0p1";
+
+		properties: {
+			command = < one of create" or "delete" >
+			path = <path for the subvolume>;
+                        mount = "true" or missing;
+		}
+	})
+
+
+If `mount` is set, SWUpdate will mount the device and the path is appenden to the
+mountpoint used with mount. If device is already mounted, path is the absolute path.
 
 Delta Update Handler
 --------------------
@@ -1210,3 +1391,157 @@ Example:
                 };
         }
 
+Memory issue with zchunk
+------------------------
+
+SWUpdate will create the header from the current version, often from a block partition. As default,
+Zchunk creates a temporary file with all chunks in /tmp, that is at the end concatenated to the
+header and written to the destination file. This means that an amount of memory equal to the
+partition (SWUpdate does not compress the chunks) is required. This was solved with later version
+of Zchunk - check inside zchunk code if ZCK_NO_WRITE is supported.
+
+Docker handlers
+----------------
+
+To improve containers update, a docker set of handlers implements part of the API to communicate
+with the docker daemon. Podman (another container solution) has a compatibility layer for
+docker REST API and could be used as well, but SWUpdate is currently not checking if a podman
+daemon must be started.
+
+Goal of these handlers is just to provice the few API to update images and start containers - it
+does not implement the full API.
+
+Docker Load Image
+-----------------
+
+This handler allow to load an image without copying temporarily and push it to the docker daemon.
+It implements the /images/load entry point., and it is implemented as "image" handler. The file
+should be in a format accepted by docker.
+
+::
+
+        images: (
+	{
+                filename = "docker-image.tar"
+                type = "docker_imageload";
+                installed-directly = true;
+        });
+
+The handler checks return value (JSON message) from the daemon, and returns with success if the image
+is added.
+
+In case the file must be decompressed, SWUpdate requires the size of the decompressed image to be
+passed to the daemon:
+
+
+::
+
+        images: (
+        {
+                filename = "alpine.tar.gz";
+                type = "docker_imageload";
+                installed-directly = true;
+                compressed = "zlib";
+                properties: {
+                     decompressed-size = "5069312";
+                };
+        });
+
+
+Docker Remove Image
+-------------------
+
+It is implemented as script (post install).
+Example:
+
+::
+
+	scripts: ( {
+		type = "docker_imagedelete";
+		properties: {
+			name = "alpine:3.4";
+		};
+	});
+
+Docker Delete Unused Images
+---------------------------
+
+It is implemented as script (post install).
+Example:
+
+::
+
+	scripts: ( {
+		type = "docker_imageprune";
+	});
+
+
+Docker: container create
+------------------------
+
+It is implemented as post-install script. The script itself is the json file passed
+to the daemon to configure and set the container. The container is just created, not started.
+
+For example, having this hello-world.json file:
+
+::
+
+        {
+                "Image": "hello-world",
+                "HostConfig": {
+                        "RestartPolicy": {
+                                "Name": "always"
+                        },
+                "AutoRemove": false
+                }
+        }
+
+Creating the container can be done in sw-description with:
+
+::
+
+	scripts: ( {
+	        filename = "hello-world.json";
+		type = "docker_containercreate";
+		properties: {
+			name = "helloworld"; /* Name of container */
+		}
+	});
+
+Docker Remove Container
+-----------------------
+
+It is implemented as script (post install).
+Example:
+
+::
+
+	scripts: ( {
+		type = "docker_containerdelete";
+		properties: {
+			name = "helloworld";
+		};
+	});
+
+Docker : Start / Stop containers
+--------------------------------
+
+Examples:
+
+::
+
+	scripts: ( {
+		type = "docker_containerstart";
+		properties: {
+			name = "helloworld";
+		};
+	});
+
+::
+
+	scripts: ( {
+		type = "docker_containerstop";
+		properties: {
+			name = "helloworld";
+		};
+	});

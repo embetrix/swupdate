@@ -5,7 +5,20 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* global $, Dropzone, WebSocket */
+/* global $, Dropzone, WebSocket, bootstrap */
+
+const StatusEnum = {
+  IDLE: 'IDLE',
+  START: 'START',
+  RUN: 'RUN',
+  SUCCESS: 'SUCCESS',
+  FAILURE: 'FAILURE',
+  DONE: 'DONE'
+}
+
+function isStatusInEnum (status) {
+  return (status in StatusEnum)
+}
 
 function restart () {
   $.post('restart', {}, function (data) {
@@ -14,7 +27,8 @@ function restart () {
 }
 
 function showRestart () {
-  $('#swu-restart-modal').modal({ backdrop: 'static', keyboard: false })
+  const restartModal = new bootstrap.Modal('#swu-restart-modal', { backdrop: 'static', keyboard: false })
+  restartModal.show()
   window.setTimeout(tryReload, 3000)
 }
 
@@ -32,6 +46,7 @@ function tryReload () {
 }
 
 function updateStatus (status) {
+  if (!isStatusInEnum(status)) return
   $('#swu-idle').hide()
   $('#swu-success').hide()
   $('#swu-failure').hide()
@@ -39,20 +54,20 @@ function updateStatus (status) {
   $('#swu-run').hide()
 
   switch (status) {
-    case 'IDLE':
+    case StatusEnum.IDLE:
       $('#swu-idle').show()
       break
-    case 'START':
-    case 'RUN':
+    case StatusEnum.START:
+    case StatusEnum.RUN:
       $('#swu-run').show()
       break
-    case 'SUCCESS':
+    case StatusEnum.SUCCESS:
       $('#swu-success').show()
       break
-    case 'FAILURE':
+    case StatusEnum.FAILURE:
       $('#swu-failure').show()
       break
-    case 'DONE':
+    case StatusEnum.DONE:
       $('#swu-done').show()
       break
     default:
@@ -60,31 +75,34 @@ function updateStatus (status) {
   }
 }
 
-var updateProgressBarStatus = (function (status) {
-  var s = ''
+const updateProgressBarStatus = (function (status) {
+  let s = ''
 
   return function (status) {
+    if (!isStatusInEnum(status)) return
     $('#swu-progress-bar')
       .removeClass('bg-danger bg-success progress-bar-animated')
     $('#swu-progress-spinner')
-      .removeClass('fa-spinner fa-spin')
+      .addClass('invisible')
+      .removeClass('visible')
     $('#swu-progress-run').hide()
 
     switch (status) {
-      case 'START':
+      case StatusEnum.START:
         updateProgressBar(0, '', '')
         break
-      case 'RUN':
+      case StatusEnum.RUN:
         $('#swu-progress-bar').addClass('progress-bar-animated')
         $('#swu-progress-spinner')
-          .addClass('fa-spinner fa-spin')
+          .removeClass('invisible')
+          .addClass('visible')
         $('#swu-progress-run').show()
         break
-      case 'SUCCESS':
+      case StatusEnum.SUCCESS:
         $('#swu-progress-bar')
           .addClass('bg-success')
         break
-      case 'FAILURE':
+      case StatusEnum.FAILURE:
         if (s !== 'START' || s !== 'RUN') { updateProgressBar(0, '', '') }
         $('#swu-progress-bar')
           .addClass('bg-danger')
@@ -108,20 +126,20 @@ Dropzone.options.dropzone = {
   timeout: 0,
   clickable: true,
   acceptedFiles: '.swu',
-  maxFilesize: 4096
+  maxFilesize: 0
 }
 
 window.onload = function () {
-  var protocol
+  let protocol
 
   $('#swu-restart').click(restart)
 
   if (window.location.protocol === 'https:') { protocol = 'wss:' } else { protocol = 'ws:' }
 
-  var ws = new WebSocket(protocol + '//' + window.location.host + window.location.pathname.replace(/\/[^\/]*$/, '') + '/ws')
+  const ws = new WebSocket(protocol + '//' + window.location.host + window.location.pathname.replace(/\/[^/]*$/, '') + '/ws')
 
   ws.onopen = function (event) {
-    updateStatus('IDLE')
+    updateStatus(StatusEnum.IDLE)
   }
 
   ws.onclose = function (event) {
@@ -129,28 +147,32 @@ window.onload = function () {
   }
 
   ws.onmessage = function (event) {
-    var msg = JSON.parse(event.data)
+    const msg = JSON.parse(event.data)
 
     switch (msg.type) {
-      case 'message':
-        var p = $('<p></p>')
+      case 'message': {
+        const p = $('<p></p>')
         p.text(msg.text)
         p.addClass('mb-1')
         if (msg.level <= 3) { p.addClass('text-danger') }
         $('#messages').append(p)
         break
-      case 'status':
+      }
+      case 'status': {
         updateStatus(msg.status)
         updateProgressBarStatus(msg.status)
         break
-      case 'source':
+      }
+      case 'source': {
         break
-      case 'step':
-        var percent = Math.round((100 * (Number(msg.step) - 1) + Number(msg.percent)) / Number(msg.number))
-        var value = percent + '%' + ' (' + msg.step + ' of ' + msg.number + ')'
+      }
+      case 'step': {
+        const percent = Math.round((100 * (Number(msg.step) - 1) + Number(msg.percent)) / Number(msg.number))
+        const value = percent + '%' + ' (' + msg.step + ' of ' + msg.number + ')'
 
         updateProgressBar(percent, msg.name, value)
         break
+      }
     }
   }
 }

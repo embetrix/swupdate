@@ -1,4 +1,4 @@
-# Copyright (C) 2014-2018 Stefano Babic <sbabic@denx.de>
+# Copyright (C) 2014-2018 Stefano Babic <stefano.babic@swupdate.org>
 #
 # SPDX-License-Identifier:     GPL-2.0-only
 #
@@ -10,9 +10,11 @@
 obj-y	+= dummy_handler.o chain_handler.o
 obj-$(CONFIG_ARCHIVE) += archive_handler.o
 obj-$(CONFIG_BOOTLOADERHANDLER) += boot_handler.o
+obj-$(CONFIG_BTRFS_FILESYSTEM) += btrfs_handler.o
 obj-$(CONFIG_COPY) += copy_handler.o
 obj-$(CONFIG_CFI)	+= flash_handler.o
 obj-$(CONFIG_DELTA)	+= delta_handler.o delta_downloader.o zchunk_range.o
+obj-$(CONFIG_EMMC_HANDLER)	+= emmc_csd_handler.o
 obj-$(CONFIG_DISKFORMAT_HANDLER)	+= diskformat_handler.o
 obj-$(CONFIG_DISKPART)	+= diskpart_handler.o
 obj-$(CONFIG_UNIQUEUUID)	+= uniqueuuid_handler.o
@@ -27,3 +29,4 @@ obj-$(CONFIG_SSBLSWITCH) += ssbl_handler.o
 obj-$(CONFIG_SWUFORWARDER_HANDLER) += swuforward_handler.o swuforward-ws.o
 obj-$(CONFIG_UBIVOL)	+= ubivol_handler.o
 obj-$(CONFIG_UCFWHANDLER)	+= ucfw_handler.o
+obj-$(CONFIG_DOCKER)	+= docker_handler.o

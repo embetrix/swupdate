@@ -1,7 +1,6 @@
 /*
- * (C) Copyright 2008-2017
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
- * 	on behalf of ifm electronic GmbH
+ * (C) Copyright 2013-2023
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     LGPL-2.1-or-later
  */
@@ -19,20 +18,22 @@
 #include "compat.h"
 
 #ifdef CONFIG_SOCKET_CTRL_PATH
-static char* SOCKET_CTRL_PATH = (char*)CONFIG_SOCKET_CTRL_PATH;
+char* SOCKET_CTRL_PATH = (char*)CONFIG_SOCKET_CTRL_PATH;
 #else
-static char* SOCKET_CTRL_PATH = NULL;
+char* SOCKET_CTRL_PATH = NULL;
 #endif
 
 #define SOCKET_CTRL_DEFAULT  "sockinstctrl"
 
 char *get_ctrl_socket(void) {
 	if (!SOCKET_CTRL_PATH || !strlen(SOCKET_CTRL_PATH)) {
-		const char *tmpdir = getenv("TMPDIR");
-		if (!tmpdir)
-			tmpdir = "/tmp";
-
-		if (asprintf(&SOCKET_CTRL_PATH, "%s/%s", tmpdir, SOCKET_CTRL_DEFAULT) == -1)
+		const char *socketdir = getenv("RUNTIME_DIRECTORY");
+		if(!socketdir){
+			socketdir = getenv("TMPDIR");
+		}
+		if (!socketdir)
+			socketdir = "/tmp";
+		if (asprintf(&SOCKET_CTRL_PATH, "%s/%s", socketdir, SOCKET_CTRL_DEFAULT) == -1)
 			return (char *)"/tmp/"SOCKET_CTRL_DEFAULT;
 	}
 
@@ -43,7 +44,7 @@ static int prepare_ipc(void) {
 	int connfd;
 	struct sockaddr_un servaddr;
 
-	connfd = socket(AF_LOCAL, SOCK_STREAM, 0);
+	connfd = socket(AF_LOCAL, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (connfd < 0)
 		return -1;
 

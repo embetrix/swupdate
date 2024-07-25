@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -27,7 +27,7 @@
 #include "util.h"
 #include "pctl.h"
 #include "network_ipc.h"
-#include "network_interface.h"
+#include "network_utils.h"
 #include <progress.h>
 #include "generated/autoconf.h"
 
@@ -59,6 +59,16 @@ static struct swupdate_progress progress;
 /*
  * This must be called after acquiring the mutex
  * for the progress structure
+ * It is assumed that the listeners are reading
+ * the events and consume the messages. To avoid deadlocks,
+ * SWUpdate will try to send the message without blocking,
+ * and if send() returns EWOULDBLOCk, tries some times again
+ * with a 1 second delay.
+ * This is because SWUpdate could send a lot of events,
+ * and listeners cannot be scheduled at time. The delay just
+ * slow down the update when happens. If the message cannot be
+ * sent after retries, SWUpdate will consider the listener
+ * dead and removes it from the list.
  */
 static void send_progress_msg(void)
 {
@@ -67,12 +77,24 @@ static void send_progress_msg(void)
 	void *buf;
 	size_t count;
 	ssize_t n;
+	bool tryagain;
+	const int maxAttempts = 5;
 
+	pprog->msg.apiversion = PROGRESS_API_VERSION;
 	SIMPLEQ_FOREACH_SAFE(conn, &pprog->conns, next, tmp) {
 		buf = &pprog->msg;
 		count = sizeof(pprog->msg);
+		errno = 0;
+		pprog->msg.source = get_install_source();
 		while (count > 0) {
-			n = send(conn->sockfd, buf, count, MSG_NOSIGNAL);
+			int attempt = 0;
+			do {
+				n = send(conn->sockfd, buf, count, MSG_NOSIGNAL | MSG_DONTWAIT);
+				attempt++;
+				tryagain = n <= 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
+				if (tryagain)
+					sleep(1);
+			} while (tryagain && attempt < maxAttempts);
 			if (n <= 0) {
 				close(conn->sockfd);
 				SIMPLEQ_REMOVE(&pprog->conns, conn,
@@ -107,15 +129,24 @@ void swupdate_progress_init(unsigned int nsteps) {
 	struct swupdate_progress *pprog = &progress;
 	pthread_mutex_lock(&pprog->lock);
 
+	pprog->msg.apiversion = PROGRESS_API_VERSION;
 	pprog->msg.nsteps = nsteps;
 	pprog->msg.cur_step = 0;
 	pprog->msg.status = START;
-	pprog->msg.cur_percent = 0;
-	pprog->msg.infolen = get_install_info(&pprog->msg.source, pprog->msg.info,
+		pprog->msg.cur_percent = 0;
+	pprog->msg.infolen = get_install_info(pprog->msg.info,
 						sizeof(pprog->msg.info));
+	pprog->msg.source = get_install_source();
 	send_progress_msg();
 	/* Info is just an event, reset it after sending */
 	pprog->msg.infolen = 0;
+	pthread_mutex_unlock(&pprog->lock);
+}
+
+void swupdate_progress_addstep(void) {
+	struct swupdate_progress *pprog = &progress;
+	pthread_mutex_lock(&pprog->lock);
+	pprog->msg.nsteps++;
 	pthread_mutex_unlock(&pprog->lock);
 }
 
@@ -222,20 +253,6 @@ void swupdate_progress_done(const char *info)
 	pthread_mutex_unlock(&pprog->lock);
 }
 
-static void unlink_socket(void)
-{
-#ifdef CONFIG_SYSTEMD
-	if (sd_booted()) {
-		/*
-		 * There were socket fds handed-over by systemd,
-		 * so don't delete the socket file.
-		 */
-		return;
-	}
-#endif
-	unlink(get_prog_socket());
-}
-
 void *progress_bar_thread (void __attribute__ ((__unused__)) *data)
 {
 	int listen, connfd;
@@ -252,11 +269,6 @@ void *progress_bar_thread (void __attribute__ ((__unused__)) *data)
 	if (listen < 0 ) {
 		ERROR("Error creating IPC socket %s, exiting.", get_prog_socket());
 		exit(2);
-	}
-
-	if (atexit(unlink_socket) != 0) {
-		TRACE("Cannot setup socket cleanup on exit, %s won't be unlinked.",
-			get_prog_socket());
 	}
 
 	thread_ready();

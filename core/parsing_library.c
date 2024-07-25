@@ -1,5 +1,5 @@
 /* (C) Copyright 2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -17,8 +17,8 @@
 #include "generated/autoconf.h"
 #include "bsdqueue.h"
 #include "util.h"
-#include "swupdate.h"
 #include "parselib.h"
+#include "parselib-private.h"
 
 #define MAX_LINKS_DEPTH	10
 
@@ -121,13 +121,27 @@ void get_field_string_with_size(parsertype p, void *e, const char *path, char *d
 	}
 }
 
-void get_field(parsertype p, void *e, const char *path, void *dest)
+bool is_field_numeric(parsertype p, void *e, const char *path)
 {
 	switch (p) {
 	case LIBCFG_PARSER:
-		return get_field_cfg((config_setting_t *)e, path, dest);
+		return is_field_numeric_cfg((config_setting_t *)e, path);
 	case JSON_PARSER:
-		return get_field_json((json_object *)e, path, dest);
+		return is_field_numeric_json((json_object *)e, path);
+	default:
+		(void)e;
+		(void)path;
+	}
+	return false;
+}
+
+void get_field(parsertype p, void *e, const char *path, void *dest, field_type_t type)
+{
+	switch (p) {
+	case LIBCFG_PARSER:
+		return get_field_cfg((config_setting_t *)e, path, dest, type);
+	case JSON_PARSER:
+		return get_field_json((json_object *)e, path, dest, type);
 	default:
 		(void)e;
 		(void)path;
@@ -196,7 +210,7 @@ void get_hash_value(parsertype p, void *elem, unsigned char *hash)
 	ascii_to_hash(hash, hash_ascii);
 }
 
-bool set_find_path(const char **nodes, const char *newpath, char **tmp)
+bool set_find_path(const char **nodes, const char *newpath, char ***tmp)
 {
 	char **paths;
 	unsigned int count;
@@ -204,7 +218,6 @@ bool set_find_path(const char **nodes, const char *newpath, char **tmp)
 	char *token, *ref;
 	bool first = true;
 	int allocstr = 0;
-	(void)tmp;
 
 	/*
 	 * Include of files is not supported,
@@ -287,7 +300,7 @@ bool set_find_path(const char **nodes, const char *newpath, char **tmp)
 	}
 
 	free(ref);
-	tmp = paths;
+	*tmp = paths;
 
 	return true;
 }

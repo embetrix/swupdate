@@ -1,7 +1,6 @@
 /*
- * (C) Copyright 2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
- * 	on behalf of ifm electronic GmbH
+ * (C) Copyright 2013-2023
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -22,8 +21,8 @@ struct installer_handler supported_types[MAX_INSTALLER_HANDLER];
 static unsigned long nr_installers = 0;
 static unsigned long handler_index = ULONG_MAX;
 
-int register_handler(const char *desc,
-		handler installer, HANDLER_MASK mask, void *data)
+static int __register_handler(const char *desc,
+		handler installer, HANDLER_MASK mask, void *data, handler_type_t lifetime)
 {
 	int i;
 
@@ -44,21 +43,81 @@ int register_handler(const char *desc,
 	supported_types[nr_installers].installer = installer;
 	supported_types[nr_installers].data = data;
 	supported_types[nr_installers].mask = mask;
+	supported_types[nr_installers].noglobal = (lifetime == SESSION_HANDLER);
 	nr_installers++;
 
 	return 0;
 }
 
-void print_registered_handlers(void)
+int register_handler(const char *desc,
+		handler installer, HANDLER_MASK mask, void *data)
+{
+	return __register_handler(desc, installer, mask, data, GLOBAL_HANDLER);
+}
+
+int register_session_handler(const char *desc,
+		handler installer, HANDLER_MASK mask, void *data)
+{
+	return __register_handler(desc, installer, mask, data, SESSION_HANDLER);
+}
+
+int unregister_handler(const char *desc)
+{
+	int i;
+
+	for (i = 0; i < nr_installers; i++) {
+		if ((strlen(desc) == strlen(supported_types[i].desc)) &&
+			IS_STR_EQUAL(desc, supported_types[i].desc)) {
+			break;
+		}
+	}
+
+	/* Not found */
+	if (i == nr_installers)
+		return -1;
+	for (int j = i + 1; j < nr_installers; j++) {
+		strlcpy(supported_types[j - 1].desc, supported_types[j].desc,
+		      sizeof(supported_types[j -1].desc));
+		supported_types[j - 1].installer = supported_types[j].installer;
+		supported_types[j - 1].data = supported_types[j].data;
+		supported_types[j - 1].mask = supported_types[j].mask;
+	}
+	nr_installers--;
+
+	return 0;
+}
+
+void unregister_session_handlers(void)
+{
+	int i;
+
+	for (i = nr_installers - 1; i >= 0; i--) {
+		if (supported_types[i].noglobal) {
+			unregister_handler(supported_types[i].desc);
+		}
+	}
+}
+
+void print_registered_handlers(bool global)
 {
 	unsigned int i;
+	unsigned int count = 0;
 
 	if (!nr_installers)
 		return;
-
-	INFO("Registered handlers:");
+	/*
+	 * Invert logic to ask for session handlers
+	 */
+	bool noglobal = !global;
+	INFO("Registered %s handlers:", global ? "global" : "session");
 	for (i = 0; i < nr_installers; i++) {
-		INFO("\t%s", supported_types[i].desc);
+		if (noglobal == supported_types[i].noglobal) {
+			count++;
+			INFO("\t%s", supported_types[i].desc);
+		}
+	}
+	if (count == 0) {
+		INFO("\tnone registered.");
 	}
 }
 

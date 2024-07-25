@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2013 Stefano Babic <sbabic@denx.de>
+# SPDX-FileCopyrightText: 2013 Stefano Babic <stefano.babic@swupdate.org>
 #
 # SPDX-License-Identifier: CC0-1.0
 
@@ -67,6 +67,7 @@ include/autoconf.h
 include/config/
 include/generated/
 doc/build
+doc/source/images/statemachine.png
 
 # stgit generated dirs
 patches-*
@@ -124,3 +125,10 @@ web-app/swupdate-www.tar.gz
 # ci
 !.gitlab-ci.yml
 !.github
+
+# swupdateclient
+Pipfile
+Pipfile.lock
+tools/python/swupdateclient/Pipfile.lock
+tools/python/swupdateclient/build/
+tools/python/swupdateclient/swupdateclient.egg-info/

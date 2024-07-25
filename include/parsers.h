@@ -1,12 +1,11 @@
 /*
- * (C) Copyright 2008-2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * (C) Copyright 2013-2023
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
 
-#ifndef _RECOVERY_PARSERS_H
-#define _RECOVERY_PARSERS_H
+#pragma once
 
 #include "generated/autoconf.h"
 
@@ -16,11 +15,11 @@
 #define SW_DESCRIPTION_FILENAME	CONFIG_SWDESCRIPTION
 #endif
 
-typedef int (*parser_fn)(struct swupdate_cfg *swcfg, const char *filename);
+struct swupdate_cfg;
+
+typedef int (*parser_fn)(struct swupdate_cfg *swcfg, const char *filename, char **error);
 
 int parse(struct swupdate_cfg *swcfg, const char *filename);
-int parse_cfg (struct swupdate_cfg *swcfg, const char *filename);
-int parse_json(struct swupdate_cfg *swcfg, const char *filename);
-int parse_external(struct swupdate_cfg *swcfg, const char *filename);
-#endif
-
+int parse_cfg(struct swupdate_cfg *swcfg, const char *filename, char **error);
+int parse_json(struct swupdate_cfg *swcfg, const char *filename, char **error);
+int parse_external(struct swupdate_cfg *swcfg, const char *filename, char **error);

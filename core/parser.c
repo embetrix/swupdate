@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -151,19 +151,30 @@ int parse(struct swupdate_cfg *sw, const char *descfile)
 		return ret;
 
 #endif
+	char *errors[ARRAY_SIZE(parsers)] = {0};
 	for (unsigned int i = 0; i < ARRAY_SIZE(parsers); i++) {
 		current = parsers[i];
 
-		ret = current(sw, descfile);
+		ret = current(sw, descfile, &errors[i]);
 
 		if (ret == 0)
 			break;
 	}
 
 	if (ret != 0) {
+		for (unsigned int i = 0; i < ARRAY_SIZE(parsers); i++) {
+			if (errors[i] != NULL) {
+				ERROR("%s", errors[i]);
+				free(errors[i]);
+			}
+		}
 		ERROR("no parser available to parse " SW_DESCRIPTION_FILENAME "!");
 		return ret;
 	}
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(parsers); i++)
+		if (errors[i] != NULL)
+			free(errors[i]);
 
 	ret = check_handler_list(&sw->scripts, SCRIPT_HANDLER, IS_SCRIPT, "scripts");
 	ret |= check_handler_list(&sw->images, IMAGE_HANDLER | FILE_HANDLER, IS_IMAGE_FILE,
@@ -213,7 +224,7 @@ int parse(struct swupdate_cfg *sw, const char *descfile)
 	 */
 	if (sw->no_downgrading) {
 		if (compare_versions(sw->version, sw->minimum_version) < 0) {
-			ERROR("No downgrading allowed: new version %s <= installed %s",
+			ERROR("No downgrading allowed: new version %s < installed %s",
 				sw->version, sw->minimum_version);
 			return -EPERM;
 		}
@@ -226,7 +237,7 @@ int parse(struct swupdate_cfg *sw, const char *descfile)
 	 */
 	if (sw->check_max_version) {
 		if (compare_versions(sw->version, sw->maximum_version) > 0) {
-			ERROR("Max version set: new version %s >= max allowed %s",
+			ERROR("Max version set: new version %s > max allowed %s",
 				sw->version, sw->maximum_version);
 			return -EPERM;
 		}
@@ -249,7 +260,14 @@ int parse(struct swupdate_cfg *sw, const char *descfile)
 	 * Compute the total number of installer
 	 * to initialize the progress bar
 	 */
-	swupdate_progress_init(count_elem_list(&sw->images) + count_elem_list(&sw->scripts));
+	unsigned int totalsteps = count_elem_list(&sw->images) +
+					2 * count_elem_list(&sw->scripts);
+	swupdate_progress_init(totalsteps);
+
+	TRACE("Number of found artifacts: %d", count_elem_list(&sw->images));
+	TRACE("Number of scripts: %d", count_elem_list(&sw->scripts));
+	TRACE("Number of steps to be run: %d", totalsteps);
+
 
 	/*
 	 * Send the version string as first message to progress interface
@@ -258,7 +276,7 @@ int parse(struct swupdate_cfg *sw, const char *descfile)
 	if (asprintf(&versioninfo, "{\"VERSION\" : \"%s\"}", sw->version) == ENOMEM_ASPRINTF)
 		ERROR("OOM sending version info");
 	else {
-		swupdate_progress_info(RUN, 0, versioninfo);
+		swupdate_progress_info(RUN, NONE, versioninfo);
 		free(versioninfo);
 	}
 

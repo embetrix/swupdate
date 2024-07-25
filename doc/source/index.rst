@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 .. _contents: Table of contents
@@ -13,12 +13,13 @@ Updating an embedded system
 
 SWUpdate provides a reliable way to update
 the software on an embedded system.
-Sources are hosted at https://github.com/sbabic/swupdate
+Sources are hosted at https://github.com/sbabic/swupdate. Do not
+forget to `star` SWUpdate.
 
 .. raw:: html
 
         <center>
-        <a class="github-button" href="https://github.com/sbabic/swupdate" data-icon="octicon-star" data-size="large" aria-label="Star sbabic/swupdate on GitHub">Star SWUpdate</a>
+        <a class="github-button" href="https://github.com/sbabic/swupdate" data-icon="octicon-star" data-size="large" aria-label="Star sbabic/swupdate on GitHub">Do not forget to Star SWUpdate on Github</a>
         <script async defer src="https://buttons.github.io/buttons.js"></script>
         </center>
 
@@ -74,13 +75,13 @@ Help and support
    contributing.rst
 
 ############################################
-Roadmap
+Future ideas
 ############################################
 
 .. toctree::
    :maxdepth: 2
 
-   roadmap.rst
+   improvement_proposals.rst
 
 ############################################
 Previous releases

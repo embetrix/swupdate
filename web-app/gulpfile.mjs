@@ -5,27 +5,29 @@
  * SPDX-License-Identifier: MIT
  */
 
-var cleanCSS = require('gulp-clean-css')
-var del = require('del')
-var gulp = require('gulp')
-var gzip = require('gulp-gzip')
-var imagemin = require('gulp-imagemin')
-var filter = require('gulp-filter')
-var htmlmin = require('gulp-htmlmin')
-var minify = require('gulp-minify')
-var rename = require('gulp-rename')
-var replace = require('gulp-replace')
-var sass = require('gulp-sass')(require('sass'))
-var tar = require('gulp-tar')
-var useref = require('gulp-useref')
-var minimist = require('minimist')
+import cleanCSS from 'gulp-clean-css'
+import { deleteAsync } from 'del'
+import gulp from 'gulp'
+import gzip from 'gulp-gzip'
+import imagemin from 'gulp-imagemin'
+import filter from 'gulp-filter'
+import htmlmin from 'gulp-htmlmin'
+import minify from 'gulp-minify'
+import rename from 'gulp-rename'
+import replace from 'gulp-replace'
+import * as dartSass from 'sass'
+import gulpSass from 'gulp-sass'
+import tar from 'gulp-tar'
+import useref from 'gulp-useref'
+import minimist from 'minimist'
+const sass = gulpSass(dartSass)
 
-var knownOptions = {
+const knownOptions = {
   string: 'output',
   default: { output: 'swupdate-www' }
 }
 
-var options = minimist(process.argv.slice(2), knownOptions)
+const options = minimist(process.argv.slice(2), knownOptions)
 
 gulp.task('sass', async function () {
   return gulp.src('scss/*.scss')
@@ -114,7 +116,7 @@ gulp.task('resize-images', async function () {
 })
 
 gulp.task('package', function () {
-  var name = options.output.replace('.tar', '').replace('.gz', '')
+  const name = options.output.replace('.tar', '').replace('.gz', '')
   return gulp.src('dist/**')
     .pipe(tar(name + '.tar'))
     .pipe(gzip())
@@ -122,7 +124,7 @@ gulp.task('package', function () {
 })
 
 gulp.task('clean', function () {
-  return del('dist/**', { force: true })
+  return deleteAsync(['dist/**'])
 })
 
 gulp.task('build', gulp.series('clean', gulp.parallel('copy-css', 'copy-js', 'copy-fonts', 'sass', 'minify-css', 'minify-js', 'minify-html', 'resize-images')))

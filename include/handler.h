@@ -1,19 +1,28 @@
 /*
  * (C) Copyright 2012-2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
- * 	on behalf of ifm electronic GmbH
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
 
 
-#ifndef _HANDLER_H
-#define _HANDLER_H
+#pragma once
 
+#include <stdbool.h>
+
+struct img_type;
+
+/*
+ * Identify the type of a script
+ * A script can contain functions for several of these
+ * entries. For example, it can contain both a pre- and post-
+ * install functions.
+ */
 typedef enum {
 	NONE,
-	PREINSTALL,
-	POSTINSTALL
+	PREINSTALL,	/* Script runs as preinstall */
+	POSTINSTALL,	/* Script runs a postinstall */
+	POSTFAILURE	/* Script called in case update fails */
 } script_fn ;
 
 /*
@@ -29,16 +38,29 @@ typedef enum {
 	NO_DATA_HANDLER = 32
 } HANDLER_MASK;
 
+/*
+ * Life-cycle for the handler:
+ * GLOBAL : handler is instantiated at startup and available for all updates
+ * SESSION : handler is part of the SWU and available only for the current update
+ */
+
+typedef enum {
+	GLOBAL_HANDLER,
+	SESSION_HANDLER
+} handler_type_t;
+
 #define ANY_HANDLER (IMAGE_HANDLER | FILE_HANDLER | SCRIPT_HANDLER | \
 			BOOTLOADER_HANDLER | PARTITION_HANDLER | \
 			NO_DATA_HANDLER)
 
 typedef int (*handler)(struct img_type *img, void *data);
 struct installer_handler{
-	char	desc[64];
-	handler installer;
-	void	*data;
-	unsigned int mask;
+	char	desc[64];	/* Name that identifies the handler */
+	handler installer;	/* Handler function */
+	void	*data;		/* Private data for the handler */
+	unsigned int mask;	/* Mask (see HANDLER_MASK) */
+	bool	noglobal;	/* true if handler is not global and
+				   should be removed after install */
 };
 
 struct script_handler_data {
@@ -52,10 +74,12 @@ struct script_handler_data {
 
 int register_handler(const char *desc, 
 		handler installer, HANDLER_MASK mask, void *data);
+int register_session_handler(const char *desc,
+		handler installer, HANDLER_MASK mask, void *data);
+int unregister_handler(const char *desc);
+void unregister_session_handlers(void);
 
 struct installer_handler *find_handler(struct img_type *img);
-void print_registered_handlers(void);
+void print_registered_handlers(bool global);
 struct installer_handler *get_next_handler(void);
 unsigned int get_handler_mask(struct img_type *img);
-
-#endif

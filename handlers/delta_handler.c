@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2021
- * Stefano Babic, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -24,11 +24,9 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <ctype.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
-#include <swupdate.h>
 #include <handler.h>
 #include <signal.h>
 #include <zck.h>
@@ -37,13 +35,15 @@
 #include <pctl.h>
 #include <pthread.h>
 #include <fs_interface.h>
+#include <sys/mman.h>
 #include "delta_handler.h"
 #include "multipart_parser.h"
-#include "installer.h"
 #include "zchunk_range.h"
 #include "chained_handler.h"
+#include "swupdate_image.h"
 
 #define DEFAULT_MAX_RANGES	150	/* Apache has default = 200 */
+#define BUFF_SIZE		16384
 
 const char *handlername = "delta";
 void delta_handler(void);
@@ -326,10 +326,13 @@ static int delta_retrieve_attributes(struct img_type *img, struct hnd_priv *priv
 	char *srcsize;
 	srcsize = dict_get_value(&img->properties, "source-size");
 	if (srcsize) {
-		if (!strcmp(srcsize, "detect"))
+		if (!strcmp(srcsize, "detect")) {
 			priv->detectsrcsize = true;
-		else
+		} else {
 			priv->srcsize = ustrtoull(srcsize, NULL, 10);
+			if (errno)
+				WARN("source-size %s: ustrotull failed", srcsize);
+		}
 	}
 
 	char *zckloglevel = dict_get_value(&img->properties, "zckloglevel");
@@ -469,33 +472,57 @@ static void zck_log_toswupdate(const char *function, zck_log_type lt,
 
 /*
  * Create a zck Index from a file
+ *
+ * If maxbytes has been set, it acts as a limit for the input data.
+ * If not (i.e. maxbytes==0), all the file/dev available data is used.
  */
 static bool create_zckindex(zckCtx *zck, int fd, size_t maxbytes)
 {
-	const size_t bufsize = 16384;
-	char *buf = malloc(bufsize);
-	ssize_t n;
-	int ret;
+	size_t bufsize = BUFF_SIZE;
+	char *buf = malloc(BUFF_SIZE);
+	ssize_t n = 0;
+	size_t count = 0;
+	bool rstatus = true;
 
 	if (!buf) {
 		ERROR("OOM creating temporary buffer");
 		return false;
 	}
 	while ((n = read(fd, buf, bufsize)) > 0) {
-		ret = zck_write(zck, buf, n);
-		if (ret < 0) {
+		if (zck_write(zck, buf, n) < 0) {
 			ERROR("ZCK returns %s", zck_get_error(zck));
 			free(buf);
 			return false;
 		}
-		if (maxbytes && n > maxbytes)
-			break;
+
+		if(maxbytes) {
+			/* Keep count only if maxbytes has been set and it's significant*/
+			count += n;
+
+			/* Stop if limit is reached*/
+			if (count >= maxbytes)
+				break;
+
+			/* Be sure read up to maxbytes limit next time */
+			if (BUFF_SIZE > (maxbytes - count))
+				bufsize = maxbytes - count;
+		}
 	}
 
 	free(buf);
+	if (zck_end_chunk(zck) < 0) {
+		ERROR("ZCK failed to create chunk boundary: %s", zck_get_error(zck));
+		return false;
+	}
 
-	return true;
+	if(n < 0) {
+		ERROR("Error occurred while reading data : %s", strerror(errno));
+		rstatus = false;
+	}
+
+	return rstatus;
 }
+
 
 /*
  * Chunks must be retrieved from network, prepare an send
@@ -733,7 +760,7 @@ static bool copy_network_chunks(zckChunk **dstChunk, struct hnd_priv *priv)
 					return false;
 				}
 			}
-			if ((answer->type == RANGE_DATA)) {
+			if (answer->type == RANGE_DATA) {
 				priv->dwlstate = WAITING_FOR_BOUNDARY;
 			}
 			break;
@@ -762,7 +789,7 @@ static bool copy_network_chunks(zckChunk **dstChunk, struct hnd_priv *priv)
 			if (!read_and_validate_package(priv))
 				return false;
 			answer = priv->answer;
-			if ((answer->type == RANGE_COMPLETED)) {
+			if (answer->type == RANGE_COMPLETED) {
 				priv->dwlstate = END_TRANSFER;
 			} else if (!fill_buffers_list(priv))
 				return false;
@@ -840,7 +867,7 @@ static int install_delta(struct img_type *img,
 {
 	struct hnd_priv *priv;
 	int ret = -1;
-	int dst_fd = -1, in_fd = -1;
+	int dst_fd = -1, in_fd = -1, mem_fd = -1;
 	zckChunk *iter;
 	zckCtx *zckSrc = NULL, *zckDst = NULL;
 	char *FIFO = NULL;
@@ -965,7 +992,26 @@ static int install_delta(struct img_type *img,
 			zck_get_error(zckSrc));
 		goto cleanup;
 	}
-	if (!zck_init_read(zckDst, img->fdin)) {
+
+	mem_fd = memfd_create("zchunk header", 0);
+	if (mem_fd == -1) {
+		ERROR("Cannot create memory file: %s", strerror(errno));
+		goto cleanup;
+	}
+
+	ret = copyimage(&mem_fd, img, NULL /* default write callback */);
+
+	if (ret != 0) {
+		ERROR("Error %d copying zchunk header, aborting.", ret);
+		goto cleanup;
+	}
+
+	if (lseek(mem_fd, 0, SEEK_SET) < 0) {
+		ERROR("Seeking start of memory file");
+		goto cleanup;
+	}
+
+	if (!zck_init_read(zckDst, mem_fd)) {
 		ERROR("Unable to read ZCK header from %s : %s",
 			img->fname,
 			zck_get_error(zckDst));
@@ -989,6 +1035,9 @@ static int install_delta(struct img_type *img,
 	if (!zck_set_ioption(zckSrc, ZCK_HASH_CHUNK_TYPE, ZCK_HASH_SHA256)) {
 		ERROR("Error setting HASH Type %s\n", zck_get_error(zckSrc));
 		goto cleanup;
+	}
+	if (!zck_set_ioption(zckSrc, ZCK_NO_WRITE, 1)) {
+		WARN("ZCK does not support NO Write, use huge amount of RAM %s\n", zck_get_error(zckSrc));
 	}
 
 	if (!create_zckindex(zckSrc, in_fd, priv->srcsize)) {
@@ -1017,6 +1066,8 @@ static int install_delta(struct img_type *img,
 	memset(priv_hnd->img.sha256, 0, SHA256_HASH_LENGTH);
 	strlcpy(priv_hnd->img.type, priv->chainhandler, sizeof(priv_hnd->img.type));
 	priv_hnd->img.fdin = pipes[PIPE_READ];
+	/* zchunk files are not encrypted, CBC is not suitable for range download */
+	priv_hnd->img.is_encrypted = false;
 
 	signal(SIGPIPE, SIG_IGN);
 
@@ -1059,8 +1110,9 @@ static int install_delta(struct img_type *img,
 cleanup:
 	if (zckSrc) zck_free(&zckSrc);
 	if (zckDst) zck_free(&zckDst);
-	close(dst_fd);
-	close(in_fd);
+	if (dst_fd >= 0) close(dst_fd);
+	if (in_fd >= 0) close(in_fd);
+	if (mem_fd >= 0) close(mem_fd);
 	if (FIFO) {
 		unlink(FIFO);
 		free(FIFO);

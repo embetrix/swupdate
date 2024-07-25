@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 ==================================
@@ -178,47 +178,23 @@ For example, to automatically set the version tag:
 Automatic versions in sw-description
 ------------------------------------
 
-By setting the version tag in the update file to `@SWU_AUTO_VERSION` it is
+By setting the version tag in the update file to `$swupdate_get_pkgvar(<package-name>)` it is
 automatically replaced with `PV` from BitBake's package-data-file for the package
-matching the name of the provided filename tag.
+matching the name of the provided <package-name> tag.
 For example, to set the version tag to `PV` of package `u-boot`:
 
 ::
 
-        filename = "u-boot";
-        ...
-        version = "@SWU_AUTO_VERSION";
-
-Since the filename can differ from package name (deployed with another name or
-the file is a container for the real package) you can append the correct package
-name to the tag: `@SWU_AUTO_VERSION:<package-name>`.
-For example, to set the version tag of the file `packed-bootloader` to `PV` of
-package `u-boot`:
-
-::
-
-        filename = "packed-bootloader";
-        ...
-        version = "@SWU_AUTO_VERSION:u-boot";
+        version = "$swupdate_get_pkgvar(u-boot)";
 
 To automatically insert the value of a variable from BitBake's package-data-file
 different to `PV` (e.g. `PKGV`) you can append the variable name to the tag:
-`@SWU_AUTO_VERSION@<package-data-variable>`.
+`$swupdate_get_pkgvar(<package-name>@<package-data-variable>)`
 For example, to set the version tag to `PKGV` of package `u-boot`:
 
 ::
 
-        filename = "u-boot";
-        ...
-        version = "@SWU_AUTO_VERSION@PKGV";
-
-Or combined with a different package name:
-
-::
-
-        filename = "packed-bootloader";
-        ...
-        version = "@SWU_AUTO_VERSION:u-boot@PKGV";
+        version = "$swupdate_get_pkgvar(u-bootPKGV)";
 
 Using checksum for version
 --------------------------
@@ -283,7 +259,58 @@ into the SWU - an error is raised if the flag is not set.
 In the simple way, your recipe looks like
 
 ::
+
         <your original recipe code>
 
         SWUPDATE_IMAGES_FSTYPES[<name of your image>] = <fstype to be put into SWU>
         inherit swupdate-image
+
+What about grub ?
+=================
+In order to use swupdate with grub, swupdate needs to be configured to use grub. Some of
+the imporatant configurations are **CONFIG_GRUBENV_PATH="/path/to/grubenv"**,
+where **"/path/to/grubenv"** is thepath to grub environment.
+Example: "/boot/EFI/BOOT/grubenv".
+
+The grubenv file should be created using grub-editenv tool, because it is a **1024-byte file**, therefore,
+any modification using nano or vim will only corrupt the file, and grub will not be able to use it.
+
+You can create a grubenv file using these commands for instance:
+::
+
+        GRUBENV="/path/to/grubenv"
+        grub-editenv $GRUBENV create
+        grub-editenv $GRUBENV set rootfs=2
+        grub-editenv $GRUBENV set kernel=2
+
+grub-editenv is a tool that is integrated to yocto.
+
+When the grubenv file is created, grub should be configured to use it.
+This configuration should be in the configuration file grub.cfg.
+Here is an example of grub.cfg that loads the environment file before booting:
+::
+
+        # Take a kernel and a rootfs by default in case grubenv is corrupted
+        rootfs=1
+        kernel=1
+        serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
+        default=boot
+        # set timeout to zero to boot without timeout
+        timeout=0
+        # load grubenv the environment file that contains the value of rootfs and kernel variables
+        load_env -f "/path/to/grubenv"
+        # detect which memory contains 5 partitions
+        for i in 1 2 3 4 5; do  if [ -d (hd${i},gpt5)/ ]; then drive=${i};fi ; done
+        # detect which rootfs should we boot with
+        if [ ${rootfs} = "1" ]; then rootfs_part=4 ; elif [ ${rootfs} = "2" ]; then rootfs_part=5 ; fi
+        # detect which kernel should we boot with
+        if [ ${kernel} = "1" ]; then kernel_part="(hd${drive},gpt2)" ; elif [ ${kernel} = "2" ]; then kernel_part="(hd${drive},gpt3)" ; fi
+
+        # The menuentry that is used to boot (more can be added if it is wanted)
+        menuentry 'boot'{
+        linux ${kernel_part}/bzImage root=/dev/mmcblk1p${rootfs_part} rw rootwait quiet console=ttyS2,115200 console=tty0 panic=5
+        }
+
+The grub.cfg above is merely an example, and can be modified as the user wants to,
+as long as it loads the environment variables,and it boots correctly using these environment
+variables. 

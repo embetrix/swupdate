@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 ================
@@ -79,6 +79,14 @@ Talks about SWUpdate
        - Delta OTA Update with SWUpdate by Stefano Babic, ELCE 2022
          `Slides  Delta OTA Update with SWUpdate <https://elinux.org/images/9/98/Delta_OTA_Update_with_SWUpdate_-_ELCE_2022.pdf>`_,
          `Video Delta OTA Update with SWUpdate <https://www.youtube.com/watch?v=noURP22fJhs>`_
+       - Ligthning Talk: SWUpdate Over CAN Bus - Can it ? by Stefano Babic, EOSS 2023
+         `Video SWUpdate Over CAN Bus <https://www.youtube.com/watch?v=OU7MuX2sPUU&t=59s>`_
+       - Best Practices with SWUpdate by Stefano Babic, Embedded Recipes 2023
+         `Slides Best Practices with SWUpdate <https://drive.google.com/file/d/1pbMtFH6IkztpsgvL6GJ54Fs7hPu7tPBf/view?usp=drive_link>`_,
+         `Video Best Practices with SWUpdate <https://www.youtube.com/watch?v=SXzfDa8HEss&list=PLwnbCeeZfQ_Mi7gjUpLZxXGOcEBS_K8kH&index=7&pp=iAQB>`_
+       - Delta Updates: Making Updates Leaner by Felix Moessbauer & Jan Kiszka, Siemens AG, Embedded Open Source Summit 2024
+         `Slides Delta Updates: Making Updates Leaner <https://static.sched.com/hosted_files/eoss24/26/2024_EOSS_CIP_delta_updates.pdf>`_,
+         `Video Delta Updates: Making Updates Leaner <https://www.youtube.com/watch?v=1rzf7tE-cKY>`_
 
 Useful references
 =================

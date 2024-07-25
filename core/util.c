@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -26,12 +26,13 @@
 #include <regex.h>
 #include <string.h>
 #include <dirent.h>
+#include "swupdate_dict.h"
+#include "swupdate_image.h"
 
 #if defined(__linux__)
 #include <sys/statvfs.h>
 #endif
 
-#include "swupdate.h"
 #include "util.h"
 #include "generated/autoconf.h"
 
@@ -51,6 +52,12 @@ struct decryption_key {
 };
 
 static struct decryption_key *aes_key = NULL;
+
+/*
+ * Configuration file for fw_env.config
+ */
+
+static char *fwenv_config = NULL;
 
 char *sdup(const char *str) {
 	char *p;
@@ -155,13 +162,33 @@ void swupdate_create_directory(const char* path) {
 		return;
 	}
 	if (mkdir(dpath, 0777)) {
-		WARN("Directory %s cannot be created due to : %s",
-			 path, strerror(errno));
+		WARN("Directory %s cannot be created: %s",
+			 dpath, strerror(errno));
 	}
 	free(dpath);
 }
 
 #ifndef CONFIG_NOCLEANUP
+static int _is_mount_point(const char *path, const char *parent_path) {
+	struct stat path_stat, parent_stat;
+
+	if (stat(path, &path_stat)) {
+		ERROR("stat for path %s failed: %s", path, strerror(errno));
+		return -errno;
+	}
+
+	if (stat(parent_path, &parent_stat)) {
+		ERROR("stat for parent path %s failed: %s", parent_path, strerror(errno));
+		return -errno;
+	}
+
+	if (path_stat.st_dev != parent_stat.st_dev) {
+		return 1;
+	}
+
+	return 0;
+}
+
 static int _remove_directory_cb(const char *fpath, const struct stat *sb,
 								int typeflag, struct FTW *ftwbuf)
 {
@@ -202,7 +229,23 @@ int swupdate_remove_tmp_directory(const char* path)
 		ERROR("OOM: Directory %s not removed", path);
 		return -ENOMEM;
 	}
+
+	ret = _is_mount_point(dpath, get_tmpdir());
+	if (ret < 0)
+		goto out;
+
+	if (ret) {
+		WARN("Unexpected mountpoint, unmounting: %s", dpath);
+		ret = swupdate_umount(dpath);
+		if (ret && errno != EINVAL) {
+			ret = -errno;
+			ERROR("Can't unmount path %s: %s", dpath, strerror(errno));
+			goto out;
+		}
+	}
+
 	ret = nftw(dpath, _remove_directory_cb, 64, FTW_DEPTH | FTW_PHYS);
+out:
 	free(dpath);
 	return ret;
 }
@@ -344,71 +387,6 @@ int mkpath(char *dir, mode_t mode)
 	return 0;
 }
 
-/*
- * This function is strict bounded with the hardware
- * It reads some GPIOs to get the hardware revision
- */
-int get_hw_revision(struct hw_type *hw)
-{
-	FILE *fp;
-	int ret;
-	char *b1, *b2;
-#ifdef CONFIG_HW_COMPATIBILITY_FILE
-#define HW_FILE CONFIG_HW_COMPATIBILITY_FILE
-#else
-#define HW_FILE "/etc/hwrevision"
-#endif
-
-	if (!hw)
-		return -EINVAL;
-
-	/*
-	 * do not overwrite if it is already set
-	 * (maybe from command line)
-	 */
-	if (strlen(hw->boardname))
-		return 0;
-
-	memset(hw->boardname, 0, sizeof(hw->boardname));
-	memset(hw->revision, 0, sizeof(hw->revision));
-
-	/*
-	 * Not all boards have pins for revision number
-	 * check if there is a file containing theHW revision number
-	 */
-	fp = fopen(HW_FILE, "r");
-	if (!fp)
-		return -1;
-
-	ret = fscanf(fp, "%ms %ms", &b1, &b2);
-	fclose(fp);
-
-	if (ret != 2) {
-		TRACE("Cannot find Board Revision");
-		if(ret == 1)
-			free(b1);
-		return -1;
-	}
-
-	if ((strlen(b1) > (SWUPDATE_GENERAL_STRING_SIZE) - 1) ||
-		(strlen(b2) > (SWUPDATE_GENERAL_STRING_SIZE - 1))) {
-		ERROR("Board name or revision too long");
-		ret = -1;
-		goto out;
-	}
-
-	strlcpy(hw->boardname, b1, sizeof(hw->boardname));
-	strlcpy(hw->revision, b2, sizeof(hw->revision));
-
-	ret = 0;
-
-out:
-	free(b1);
-	free(b2);
-
-	return ret;
-}
-
 /**
  * hwid_match - try to match a literal or RE hwid
  * @rev: literal or RE specification
@@ -449,39 +427,6 @@ int hwid_match(const char* rev, const char* hwrev)
 out:
 	return ret;
 }
-
-/*
- * The HW revision of the board *MUST* be inserted
- * in the sw-description file
- */
-#ifdef CONFIG_HW_COMPATIBILITY
-int check_hw_compatibility(struct swupdate_cfg *cfg)
-{
-	struct hw_type *hw;
-	int ret;
-
-	ret = get_hw_revision(&cfg->hw);
-	if (ret < 0)
-		return -1;
-
-	TRACE("Hardware %s Revision: %s", cfg->hw.boardname, cfg->hw.revision);
-	LIST_FOREACH(hw, &cfg->hardware, next) {
-		if (hw &&
-		    (!hwid_match(hw->revision, cfg->hw.revision))) {
-			TRACE("Hardware compatibility verified");
-			return 0;
-		}
-	}
-
-	return -1;
-}
-#else
-int check_hw_compatibility(struct swupdate_cfg
-		__attribute__ ((__unused__)) *cfg)
-{
-	return 0;
-}
-#endif
 
 uintmax_t
 from_ascii (char const *where, size_t digs, unsigned logbase)
@@ -633,6 +578,23 @@ unsigned char *get_aes_ivt(void) {
 	return aes_key->ivt;
 }
 
+bool is_hex_str(const char *ascii) {
+	unsigned int i, size;
+
+	if (!ascii)
+		return false;
+
+	size = strlen(ascii);
+	if (!size)
+		return false;
+
+	for (i = 0;  i < size; ++i) {
+		if (!isxdigit(ascii[i]))
+			return false;
+	}
+	return true;
+}
+
 int set_aes_key(const char *key, const char *ivt)
 {
 	int ret;
@@ -645,6 +607,11 @@ int set_aes_key(const char *key, const char *ivt)
 		aes_key = (struct decryption_key *)calloc(1, sizeof(*aes_key));
 		if (!aes_key)
 			return -ENOMEM;
+	}
+
+	if (strlen(ivt) != (AES_BLK_SIZE*2) || !is_hex_str(ivt)) {
+		ERROR("Invalid ivt");
+		return -EINVAL;
 	}
 
 	ret = ascii_to_bin(aes_key->ivt, sizeof(aes_key->ivt), ivt);
@@ -664,33 +631,41 @@ int set_aes_key(const char *key, const char *ivt)
 		aes_key->keylen = keylen / 2;
 		break;
 	default:
+		ERROR("Invalid aes_key length");
 		return -EINVAL;
 	}
+	ret |= !is_hex_str(key);
 	ret |= ascii_to_bin(aes_key->key, aes_key->keylen, key);
 #endif
 
 	if (ret) {
+		ERROR("Invalid aes_key");
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-int set_aes_ivt(const char *ivt)
-{
-	int ret;
-
-	if (!aes_key)
-		return -EFAULT;
-
-	ret = ascii_to_bin(aes_key->ivt, sizeof(aes_key->ivt), ivt);
-
-	if (ret) {
-		return -EINVAL;
-	}
-
-	return 0;
+const char *get_fwenv_config(void) {
+	if (!fwenv_config)
+#if defined(CONFIG_UBOOT)
+		return CONFIG_UBOOT_FWENV;
+#else
+		return NULL;
+#endif
+	return fwenv_config;
 }
+
+void set_fwenv_config(const char *fname) {
+	if (!fname)
+		return;
+
+	if (fwenv_config)
+		free(fwenv_config);
+
+	fwenv_config = strdup(fname);
+}
+
 
 char** string_split(const char* in, const char d)
 {
@@ -804,9 +779,11 @@ unsigned long long ustrtoull(const char *cp, char **endptr, unsigned int base)
 
 	switch (*endp) {
 	case 'G':
+	case 'g':
 		result *= 1024;
 		/* fall through */
 	case 'M':
+	case 'm':
 		result *= 1024;
 		/* fall through */
 	case 'K':
@@ -820,6 +797,12 @@ unsigned long long ustrtoull(const char *cp, char **endptr, unsigned int base)
 		} else {
 			endp += 1;
 		}
+	case 0:
+		break;
+	default:
+		errno = EINVAL;
+		result = 0;
+		goto out;
 	}
 
 out:
@@ -868,6 +851,9 @@ int swupdate_mount(const char *device, const char *dir, const char *fstype)
 	return nmount(iov, iovlen, mntflags);
 #else
 	/* Not implemented for this OS, no specific errno. */
+	(void)device;
+	(void)dir;
+	(void)fstype;
 	errno = 0;
 	return -1;
 #endif
@@ -882,6 +868,7 @@ int swupdate_umount(const char *dir)
 	return unmount(dir, mntflags);
 #else
 	/* Not implemented for this OS, no specific errno. */
+	(void)dir;
 	errno = 0;
 	return -1;
 #endif
@@ -1329,4 +1316,11 @@ bool img_check_free_space(struct img_type *img, int fd)
 		return true;
 
 	return check_free_space(fd, size, img->fname);
+}
+
+bool check_same_file(int fd1, int fd2) {
+    struct stat stat1, stat2;
+    if(fstat(fd1, &stat1) < 0) return false;
+    if(fstat(fd2, &stat2) < 0) return false;
+    return (stat1.st_dev == stat2.st_dev) && (stat1.st_ino == stat2.st_ino);
 }

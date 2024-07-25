@@ -1,12 +1,13 @@
 /*
  * (C) Copyright 2013-2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <inttypes.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -19,6 +20,7 @@
 #include <pthread.h>
 
 #include "bsdqueue.h"
+#include "swupdate_status.h"
 #include "util.h"
 #include "pctl.h"
 #include "progress.h"
@@ -29,7 +31,7 @@
 #endif
 
 /*
- * There is a list of notifier. Each registered
+ * There is a list of notifiers. Each registered
  * notifier will receive the notification
  * and can process it.
  */
@@ -187,7 +189,7 @@ void notifier_set_color(int level, char *col)
 }
 
 /*
- * This allows to extend the list of notifier.
+ * This allows one to extend the list of notifiers.
  * One can register a new notifier and it will
  * receive any notification that is sent via
  * the notify() call
@@ -234,9 +236,12 @@ void notify(RECOVERY_STATUS status, int error, int level, const char *msg)
 				strlcpy(notifymsg.buf, msg, sizeof(notifymsg.buf) - 1);
 			else
 				notifymsg.buf[0] = '\0';
-			sendto(notifyfd, &notifymsg, sizeof(notifymsg), 0,
-			      (struct sockaddr *) &notify_server,
-				sizeof(struct sockaddr_un));
+			if (-1 == sendto(notifyfd, &notifymsg, sizeof(notifymsg), 0,
+					 (struct sockaddr *)&notify_server,
+					 sizeof(struct sockaddr_un))) {
+				fprintf(stderr, "notify() failed with error %d: %s\n",
+					errno, strerror(errno));
+			}
 		}
 	} else { /* Main process */
 		pthread_mutex_lock(&clients_mutex);
@@ -317,7 +322,7 @@ static void console_notifier (RECOVERY_STATUS status, int error, int level, cons
 
 	fprintf(level == ERRORLEVEL ? stderr : stdout,
 			" : %s %s%s\n", current, msg ? msg : "", console_ansi_colors ? "\x1b[0m" : "");
-	fflush(stdout);
+	fflush(level == ERRORLEVEL ? stderr : stdout);
 }
 
 /*
@@ -356,9 +361,10 @@ static void progress_notifier (RECOVERY_STATUS status, int event, int level, con
 	if (status != PROGRESS)
 	       return;
 
-	if (event == RECOVERY_DWL && (sscanf(msg, "%d-%llu", &dwl_percent, &dwl_bytes) == 2)) {
-		swupdate_download_update(dwl_percent, dwl_bytes);
-		return;
+	if (event == RECOVERY_DWL &&
+	    (sscanf(msg, "%d-%llu", &dwl_percent, &dwl_bytes) == 2)) {
+	       swupdate_download_update(dwl_percent, dwl_bytes);
+	       return;
 	}
 
 	swupdate_progress_info(status, event, msg);
@@ -367,21 +373,40 @@ static void progress_notifier (RECOVERY_STATUS status, int event, int level, con
 
 #if defined(__FreeBSD__)
 static char* socket_path = NULL;
-static void unlink_socket(void)
+static void unlink_notifier_socket(void)
 {
-	if (socket_path) {
-		unlink(socket_path);
+	if (socket_path != NULL) {
+		(void)unlink(socket_path);
 		free(socket_path);
+		socket_path = NULL;
 	}
 }
 
-static void setup_socket_cleanup(struct sockaddr_un *addr)
+static void set_socket_bufsize(int fd, int whichbuf, int size)
 {
-	socket_path = strndup(addr->sun_path, sizeof(addr->sun_path));
-	if (atexit(unlink_socket) != 0) {
-		TRACE("Cannot setup socket cleanup on exit, %s won't be unlinked.", socket_path);
+	/* Round size up to next ^2 ... */
+	int bufsize = 1;
+	while (bufsize < size) {
+		bufsize <<= 1;
 	}
-	unlink(socket_path);
+	/* ... and add some headroom. */
+	bufsize *= 4;
+	socklen_t buflen = sizeof(bufsize);
+	int res = setsockopt(fd, SOL_SOCKET, whichbuf, &bufsize, sizeof(bufsize));
+	if (res == -1) {
+		fprintf(stderr, "Error %d setsockopt %d=%d:%s\n",
+		errno, whichbuf, bufsize, strerror(errno));
+	}
+	int effective_bufsize = 0;
+	res = getsockopt(fd, SOL_SOCKET, whichbuf, &effective_bufsize, &buflen);
+	if (res == -1) {
+		fprintf(stderr, "Error %d getsockopt %d:%s\n",
+			errno, whichbuf, strerror(errno));
+	}
+	if (effective_bufsize < bufsize) {
+		WARN("Notifier socket buffer is %d, expected: %d.",
+		     effective_bufsize, bufsize);
+	}
 }
 #endif
 
@@ -402,10 +427,21 @@ static void addr_init(struct sockaddr_un *addr, const char *path)
 	/*
 	 * Use filesystem-backed sockets on FreeBSD although this interface
 	 * is internal as there are no Linux-like abstract sockets.
+	 *
+	 * Note: $RUNTIME_DIRECTORY is not native to FreeBSD but for
+	 * consistency with Linux and containment, try to use it.
 	 */
-	strncpy(addr->sun_path, CONFIG_SOCKET_NOTIFIER_DIRECTORY, sizeof(addr->sun_path));
-	strncat(addr->sun_path, path,
-			sizeof(addr->sun_path)-strlen(CONFIG_SOCKET_NOTIFIER_DIRECTORY));
+	const char *socketdir = getenv("RUNTIME_DIRECTORY");
+	if(!socketdir){
+		socketdir = getenv("TMPDIR");
+	}
+	if (!socketdir) {
+		socketdir = "/tmp";
+	}
+	if (snprintf(addr->sun_path, sizeof(addr->sun_path), "%s/%s", socketdir, path) < 0) {
+		fprintf(stderr, "Error creating notifier socket, exiting.");
+		exit(2);
+	}
 #else
 	ERROR("Undetected OS, probably sockets won't function as expected.");
 #endif
@@ -436,7 +472,8 @@ static void *notifier_thread (void __attribute__ ((__unused__)) *data)
 	}
 
 #if defined(__FreeBSD__)
-	setup_socket_cleanup(&notify_server);
+	set_socket_bufsize(serverfd, SO_SNDBUF, sizeof(struct notify_ipc_msg));
+	set_socket_bufsize(serverfd, SO_RCVBUF, sizeof(struct notify_ipc_msg));
 #endif
 
 	int len_socket_name = strlen(&notify_server.sun_path[1]);
@@ -445,7 +482,7 @@ static void *notifier_thread (void __attribute__ ((__unused__)) *data)
 		errno = 0;
 		if (bind(serverfd, (const struct sockaddr *) &notify_server,
 			sizeof(struct sockaddr_un)) < 0) {
-			if (errno == EADDRINUSE && attempt < 10) {
+			if (errno == EADDRINUSE && attempt < 9) {
 				attempt++;
 				/*
 				 * Start increasing the socket as
@@ -453,13 +490,22 @@ static void *notifier_thread (void __attribute__ ((__unused__)) *data)
 				 */
 				notify_server.sun_path[len_socket_name + 1] = '0' + attempt;
 			} else {
-				fprintf(stderr, "Error binding notifier socket: %s, exiting.\n", strerror(errno));
+				fprintf(stderr,
+					"Error binding notifier socket %s: %s, exiting.\n",
+					(char *)&notify_server.sun_path[0], strerror(errno));
 				close(serverfd);
 				exit(2);
 			}
 		} else
 			break;
 	} while (1);
+
+#if defined(__FreeBSD__)
+	socket_path = strndup(&notify_server.sun_path[0], sizeof(notify_server.sun_path));
+	if (atexit(unlink_notifier_socket) != 0) {
+		TRACE("Cannot setup socket cleanup on exit, %s won't be unlinked.", socket_path);
+	}
+#endif
 
 	thread_ready();
 	do {
@@ -492,7 +538,7 @@ void notify_init(void)
 	if (sd_booted() && getenv("JOURNAL_STREAM") != NULL) {
 		dev_t device;
 		ino_t inode;
-		if (sscanf(getenv("JOURNAL_STREAM"), "%lu:%lu", &device, &inode) == 2) {
+		if (sscanf(getenv("JOURNAL_STREAM"), "%" SCNu64 ":%lu", &device, &inode) == 2) {
 			struct stat statbuffer;
 			if (fstat(fileno(stderr), &statbuffer) == 0) {
 				if (inode == statbuffer.st_ino && device == statbuffer.st_dev) {
@@ -510,9 +556,6 @@ void notify_init(void)
 		char buf[60];
 		snprintf(buf, sizeof(buf), "Notify%d", pid);
 		addr_init(&notify_client, buf);
-#if defined(__FreeBSD__)
-		setup_socket_cleanup(&notify_client);
-#endif
 		notifyfd = socket(AF_UNIX, SOCK_DGRAM, 0);
 
 		if (notifyfd < 0) {
@@ -523,6 +566,11 @@ void notify_init(void)
 		if (fcntl(notifyfd, F_SETFD, FD_CLOEXEC) < 0)
 			WARN("Could not set %d as cloexec: %s", notifyfd, strerror(errno));
 
+#if defined(__FreeBSD__)
+		set_socket_bufsize(notifyfd, SO_SNDBUF, sizeof(struct notify_ipc_msg));
+		set_socket_bufsize(notifyfd, SO_RCVBUF, sizeof(struct notify_ipc_msg));
+#endif
+
 		if (bind(notifyfd, (const struct sockaddr *) &notify_client,
 			sizeof(struct sockaddr_un)) < 0) {
 				/* Trace cannot work here, use printf */
@@ -531,6 +579,13 @@ void notify_init(void)
 			close(notifyfd);
 			return;
 		}
+#if defined(__FreeBSD__)
+		/*
+		 * Note: atexit(unlink_socket) "callback" is inherited from parent,
+		 * reuse it, but with this child's socket_path.
+		 */
+		socket_path = strndup(&notify_client.sun_path[0], sizeof(notify_client.sun_path));
+#endif
 	} else {
 		/*
 		 * If this is the main process, start setting the name of the

@@ -21,7 +21,8 @@
 #include <swupdate_status.h>
 #include <pthread.h>
 #include "suricatta/suricatta.h"
-#include "suricatta_private.h"
+#include "suricatta/server.h"
+#include "server_utils.h"
 #include "parselib.h"
 #include "channel.h"
 #include "channel_curl.h"
@@ -30,10 +31,12 @@
 #include "parselib.h"
 #include "swupdate_settings.h"
 #include "swupdate_dict.h"
+#include "swupdate_vars.h"
 
 #define INITIAL_STATUS_REPORT_WAIT_DELAY 10
 
 #define JSON_OBJECT_FREED 1
+#define SERVER_NAME "hawkbit"
 
 static struct option long_options[] = {
     {"tenant", required_argument, NULL, 't'},
@@ -51,8 +54,10 @@ static struct option long_options[] = {
     {"disable-token-for-dwl", no_argument, NULL, '1'},
     {"cache", required_argument, NULL, '2'},
     {"initial-report-resend-period", required_argument, NULL, 'm'},
+    {"server", required_argument, NULL, 'S'},
 	{"connection-timeout", required_argument, NULL, 's'},
 	{"custom-http-header", required_argument, NULL, 'a'},
+	{"identify", required_argument, NULL, '3'},
 	{"max-download-speed", required_argument, NULL, 'l'},
     {NULL, 0, NULL, 0}};
 
@@ -90,19 +95,17 @@ static hawkbit_enums_t hawkbit_enums[] = {
 
 extern channel_op_res_t channel_curl_init(void);
 /* Prototypes for "internal" functions */
-/* Note that they're not `static` so that they're callable from unit tests. */
-server_op_res_t server_handle_initial_state(update_state_t stateovrrd);
+/* Note that the non-`static` functions are called from unit tests. */
+static server_op_res_t server_handle_initial_state(update_state_t stateovrrd);
 static int server_update_status_callback(ipc_message *msg);
-int server_update_done_callback(RECOVERY_STATUS status);
 server_op_res_t server_process_update_artifact(int action_id,
 						json_object *json_data_artifact,
 						const char *update_action,
 						const char *part,
 						const char *version,
 						const char *name);
-void server_print_help(void);
 server_op_res_t server_set_polling_interval_json(json_object *json_root);
-server_op_res_t server_set_config_data(json_object *json_root);
+static server_op_res_t server_set_config_data(json_object *json_root);
 server_op_res_t
 server_send_deployment_reply(channel_t *channel,
 			     const int action_id, const int job_cnt_max,
@@ -145,15 +148,6 @@ static channel_data_t channel_data_defaults = {.debug = false,
 						};
 
 static struct timeval server_time;
-
-/* Prototypes for "public" functions */
-server_op_res_t server_has_pending_action(int *action_id);
-server_op_res_t server_stop(void);
-server_op_res_t server_ipc(ipc_message *msg);
-server_op_res_t server_start(char *fname, int argc, char *argv[]);
-server_op_res_t server_install_update(void);
-server_op_res_t server_send_target_data(void);
-unsigned int server_get_polling_interval(void);
 
 /*
  * Just called once to setup the tokens
@@ -503,7 +497,7 @@ server_op_res_t server_set_polling_interval_json(json_object *json_root)
 	return SERVER_OK;
 }
 
-unsigned int server_get_polling_interval(void)
+static unsigned int server_get_polling_interval(void)
 {
 	return server_hawkbit.polling_interval;
 }
@@ -741,7 +735,7 @@ static size_t server_check_during_dwl(char  __attribute__ ((__unused__)) *stream
 	return ret;
 }
 
-server_op_res_t server_has_pending_action(int *action_id)
+static server_op_res_t server_has_pending_action(int *action_id)
 {
 
 	channel_data_t channel_data = channel_data_defaults;
@@ -862,6 +856,35 @@ static server_op_res_t handle_feedback(int action_id, server_op_res_t result,
 	return SERVER_UPDATE_AVAILABLE;
 }
 
+static void get_action_id_from_env(int *action_id)
+{
+	/*
+	 * Retrieve the action_id if SWUpdate stored it
+	 * during the update
+	 * The current action_id on the server can be different if the operator
+	 * cancelled a rollout and started a new one while SWUpdate was
+	 * restarting.
+	 * Get the acction_id that corresponds to the done update if it was
+	 * stored.
+	 */
+	char *action_str = swupdate_vars_get("action_id", NULL);
+	if (!action_str) {
+		WARN("Action id not in env: action from server sent, possible mismatch ");
+		return;
+	}
+	int tmp = ustrtoull(action_str, NULL, 10);
+	if (errno)
+		WARN("action_id %s: ustrtoull failed",
+		     action_str);
+	/*
+	 * action_id = 0 is invalid, then check it
+	 */
+	if (tmp > 0) {
+		*action_id = tmp;
+		TRACE("Retrieve action_id from previous run: %d", *action_id);
+	}
+	free(action_str);
+}
 
 server_op_res_t server_handle_initial_state(update_state_t stateovrrd)
 {
@@ -908,17 +931,28 @@ server_op_res_t server_handle_initial_state(update_state_t stateovrrd)
 	server_op_res_t result;
 
 	/*
-	 * Retrieving current action id
+	 * Try to retrieve current action id
 	 */
+
 	channel_data_t channel_data = channel_data_defaults;
-	result =
-	    server_get_deployment_info(server_hawkbit.channel, &channel_data, &action_id);
+	result = server_get_deployment_info(server_hawkbit.channel,
+						    &channel_data, &action_id);
+
+	/*
+	 * Get action_id from env, if any
+	 */
+	get_action_id_from_env(&action_id);
 
 	result = handle_feedback(action_id, result, state, reply_result,
 				 reply_execution, 1, &reply_message);
 
 	if (result != SERVER_UPDATE_AVAILABLE)
 		return result;
+
+	/*
+	 * Everything fine, reset action_id if any
+	 */
+	swupdate_vars_set("action_id", NULL, NULL);
 
 	/* NOTE (Re-)setting STATE_KEY=STATE_OK == '0' instead of deleting it
 	 *      as it may be required for the switchback/recovery U-Boot logics.
@@ -968,9 +1002,14 @@ static void *process_notification_thread(void *data)
 	for (;;) {
 		ipc_message msg;
 		bool data_avail = false;
-		int ret = ipc_get_status_timeout(&msg, 100);
+		int ret = ipc_get_status(&msg);
 
-		data_avail = ret > 0 && (strlen(msg.data.status.desc) != 0);
+		if (ret < 0) {
+			ERROR("Error getting status, stopping notification thread");
+			stop = true;
+		} else {
+			data_avail = (strlen(msg.data.status.desc) != 0);
+		}
 
 		/*
 		 * Mutex used to synchronize end of the thread
@@ -984,12 +1023,6 @@ static void *process_notification_thread(void *data)
 
 		if (data_avail && msg.data.status.current == PROGRESS)
 			continue;
-		/*
-		 * If there is a message
-		 * ret > 0: data available
-		 * ret == 0: TIMEOUT, no more messages
-		 * ret < 0 : ERROR, exit
-		 */
 		if (data_avail && numdetails < MAX_DETAILS) {
 			for (int c = 0; c < strlen(msg.data.status.desc); c++) {
 				switch (msg.data.status.desc[c]) {
@@ -1031,6 +1064,10 @@ static void *process_notification_thread(void *data)
 
 		if (stop && !data_avail)
 			break;
+
+		// wait a bit for next message...
+		if (!data_avail)
+			usleep(100000);
 	}
 
 	pthread_mutex_unlock(&notifylock);
@@ -1069,6 +1106,17 @@ server_op_res_t server_process_update_artifact(int action_id,
 	    json_object_array_length(json_data_artifact);
 	int json_data_artifact_installed = 0;
 	json_object *json_data_artifact_item = NULL;
+
+	char *action_id_str;
+	if (asprintf(&action_id_str, "%d", action_id) == ENOMEM_ASPRINTF) {
+		ERROR("OOM reached when saving action_id");
+		return SERVER_EERR;
+	}
+	if (swupdate_vars_set("action_id", action_id_str, NULL)) {
+		WARN("Action_id cannot be stored, do yourself");
+	}
+	free(action_id_str);
+
 	for (int json_data_artifact_count = 0;
 	     json_data_artifact_count < json_data_artifact_max;
 	     json_data_artifact_count++) {
@@ -1156,6 +1204,7 @@ server_op_res_t server_process_update_artifact(int action_id,
 
 		static const char* const update_info = STRINGIFY(
 		{
+		"server": "%s",
 		"update": "%s",
 		"part": "%s",
 		"version": "%s",
@@ -1165,6 +1214,7 @@ server_op_res_t server_process_update_artifact(int action_id,
 		);
 		if (ENOMEM_ASPRINTF ==
 		    asprintf(&channel_data.info, update_info,
+			    SERVER_NAME,
 			    update_action,
 			    part,
 			    version,
@@ -1285,7 +1335,7 @@ cleanup:
 	return result;
 }
 
-server_op_res_t server_install_update(void)
+static server_op_res_t server_install_update(void)
 {
 	int action_id;
 	channel_data_t channel_data = channel_data_defaults;
@@ -1503,7 +1553,7 @@ int get_target_data_length(bool locked)
 	return len;
 }
 
-server_op_res_t server_send_target_data(void)
+static server_op_res_t server_send_target_data(void)
 {
 	channel_t *channel = server_hawkbit.channel;
 	struct dict_entry *entry;
@@ -1562,6 +1612,7 @@ server_op_res_t server_send_target_data(void)
 	{
 		"id": "%s",
 		"time": "%s",
+		"mode" : "replace",
 		"status": {
 			"result": {
 				"finished": "%s"
@@ -1599,6 +1650,7 @@ server_op_res_t server_send_target_data(void)
 	}
 
 	channel_data_reply.url = url;
+	channel_data_reply.format = CHANNEL_PARSE_NONE;
 	channel_data_reply.request_body = json_reply_string;
 	TRACE("URL=%s JSON=%s", channel_data_reply.url, channel_data_reply.request_body);
 	channel_data_reply.method = CHANNEL_PUT;
@@ -1619,7 +1671,7 @@ cleanup:
 	return result;
 }
 
-void server_print_help(void)
+static void server_print_help(void)
 {
 	fprintf(
 	    stdout,
@@ -1649,6 +1701,7 @@ void server_print_help(void)
 	    "\t  -s, --connection-timeout Set the server connection timeout (default: 300s).\n"
 	    "\t  -a, --custom-http-header <name> <value> Set custom HTTP header, "
 	    "appended to every HTTP request being sent.\n"
+	    "\t  --identify <name> <value> Set custom device attributes for Suricatta.\n"
 	    "\t  -n, --max-download-speed <limit>  Set download speed limit.\n"
 	    "\t                                    Example: -n 100k; -n 1M; -n 100; -n 1G\n",
 	    CHANNEL_DEFAULT_POLLING_INTERVAL, CHANNEL_DEFAULT_RESUME_TRIES,
@@ -1676,19 +1729,19 @@ static int server_hawkbit_settings(void *elem, void  __attribute__ ((__unused__)
 		mandatory_argument_count |= URL_BIT;
 	}
 
-	get_field(LIBCFG_PARSER, elem, "polldelay",
-		&server_hawkbit.polling_interval);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "polldelay",
+		(int *)&server_hawkbit.polling_interval);
 
-	get_field(LIBCFG_PARSER, elem, "initial-report-resend-period",
-		&server_hawkbit.initial_report_resend_period);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "initial-report-resend-period",
+		(int *)&server_hawkbit.initial_report_resend_period);
 
-	suricatta_channel_settings(elem, &channel_data_defaults);
+	channel_settings(elem, &channel_data_defaults);
 
-	get_field(LIBCFG_PARSER, elem, "usetokentodwl",
+	GET_FIELD_BOOL(LIBCFG_PARSER, elem, "usetokentodwl",
 		&server_hawkbit.usetokentodwl);
 
-	get_field(LIBCFG_PARSER, elem, "connection-timeout",
-		&channel_data_defaults.connection_timeout);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "connection-timeout",
+		(int *)&channel_data_defaults.connection_timeout);
 
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "targettoken", tmp);
 	if (strlen(tmp))
@@ -1701,7 +1754,7 @@ static int server_hawkbit_settings(void *elem, void  __attribute__ ((__unused__)
 
 }
 
-server_op_res_t server_start(char *fname, int argc, char *argv[])
+static server_op_res_t server_start(const char *fname, int argc, char *argv[])
 {
 	update_state_t update_state = STATE_NOT_AVAILABLE;
 	int choice = 0;
@@ -1743,7 +1796,7 @@ server_op_res_t server_start(char *fname, int argc, char *argv[])
 	/* reset to optind=1 to parse suricatta's argument vector */
 	optind = 1;
 	opterr = 0;
-	while ((choice = getopt_long(argc, argv, "t:i:c:u:p:xr:y::w:k:g:f:2:m:s:a:n:",
+	while ((choice = getopt_long(argc, argv, "t:i:c:u:p:xr:y::w:k:g:f:2:m:s:a:n:S:",
 				     long_options, NULL)) != -1) {
 		switch (choice) {
 		case 't':
@@ -1805,7 +1858,9 @@ server_op_res_t server_start(char *fname, int argc, char *argv[])
 			}
 			if (channel_data_defaults.proxy == NULL) {
 				if ((getenv("http_proxy") == NULL) &&
-				    (getenv("all_proxy") == NULL)) {
+				    (getenv("https_proxy") == NULL) &&
+				    (getenv("HTTPS_PROXY") == NULL) &&
+				    (getenv("ALL_PROXY") == NULL)) {
 					ERROR("Should use proxy but no "
 					      "proxy environment "
 					      "variables nor proxy URL "
@@ -1846,12 +1901,29 @@ server_op_res_t server_start(char *fname, int argc, char *argv[])
 						argv[optind++]) < 0)
 				return SERVER_EINIT;
 			break;
+		case '3':
+			if (optind >= argc)
+				return SERVER_EINIT;
+
+			if (dict_insert_value(&server_hawkbit.configdata,
+						optarg,
+						argv[optind++]) < 0)
+				return SERVER_EINIT;
+			break;
 		case 'n':
 			channel_data_defaults.max_download_speed =
 				(unsigned int)ustrtoull(optarg, NULL, 10);
+			if (errno) {
+				ERROR("max-download-speed %s: ustrtoull failed",
+				      optarg);
+				return SERVER_EINIT;
+			}
 			break;
 		/* Ignore not recognized options, they can be already parsed by the caller */
 		case '?':
+			break;
+		/* Ignore the --server option which is already parsed by the caller. */
+		case 'S':
 			break;
 		}
 	}
@@ -1932,7 +2004,7 @@ server_op_res_t server_start(char *fname, int argc, char *argv[])
 	return SERVER_OK;
 }
 
-server_op_res_t server_stop(void)
+static server_op_res_t server_stop(void)
 {
 	(void)server_hawkbit.channel->close(server_hawkbit.channel);
 	free(server_hawkbit.channel);
@@ -1956,12 +2028,19 @@ static server_op_res_t server_activation_ipc(ipc_message *msg)
 
 	json_object *json_data = json_get_path_key(
 	    json_root, (const char *[]){"id", NULL});
-	if (json_data == NULL) {
-		ERROR("Got malformed JSON: Could not find action id");
-		DEBUG("Got JSON: %s", json_object_to_json_string(json_data));
+
+	int action_id = -1;
+	if (json_data) {
+		action_id = json_object_get_int(json_data);
+	}
+	if (action_id <= 0) { /* 0 is not a valid action id */
+		get_action_id_from_env(&action_id);
+	}
+
+	if (action_id <= 0) {
+		ERROR("No action_id passed into JSON message and no action:_id in env");
 		return SERVER_EERR;
 	}
-	int action_id = json_object_get_int(json_data);
 
 	json_data = json_get_path_key(
 	    json_root, (const char *[]){"status", NULL});
@@ -1985,6 +2064,10 @@ static server_op_res_t server_activation_ipc(ipc_message *msg)
 		return  SERVER_EERR;
 	}
 
+	if (!json_data) {
+		ERROR("No details are passed, they are mandatory.");
+		return SERVER_EERR;
+	}
 	int numdetails = json_object_array_length(json_data);
 	const char **details = (const char **)malloc((numdetails + 1) * (sizeof (char *)));
 	if(!details)
@@ -2122,7 +2205,7 @@ static server_op_res_t server_status_ipc(ipc_message *msg)
 	return SERVER_OK;
 }
 
-server_op_res_t server_ipc(ipc_message *msg)
+static server_op_res_t server_ipc(ipc_message *msg)
 {
 	server_op_res_t result = SERVER_OK;
 
@@ -2149,4 +2232,21 @@ server_op_res_t server_ipc(ipc_message *msg)
 	msg->data.procmsg.len = 0;
 
 	return SERVER_OK;
+}
+
+server_t server_hawkbit_funcs = {
+	.has_pending_action = &server_has_pending_action,
+	.install_update = &server_install_update,
+	.send_target_data = &server_send_target_data,
+	.get_polling_interval = &server_get_polling_interval,
+	.start = &server_start,
+	.stop = &server_stop,
+	.ipc = &server_ipc,
+	.help = &server_print_help,
+};
+
+__attribute__((constructor))
+static void register_server_hawkbit(void)
+{
+	register_server(SERVER_NAME, &server_hawkbit_funcs);
 }

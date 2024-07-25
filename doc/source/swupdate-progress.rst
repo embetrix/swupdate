@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 swupdate-progress
@@ -32,6 +32,8 @@ after an update.
         path to progress IPC socket in case the default is not taken
 -w
         waits for a SWUpdate connection instead of exit with error
+-q
+        don't print progress bar
 -h
         print a help
         

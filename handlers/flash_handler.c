@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2014-2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * Hamming code from
  * https://github.com/martinezjavier/writeloader
@@ -25,8 +25,8 @@
 #include <sys/ioctl.h>
 
 #include <mtd/mtd-user.h>
-#include "swupdate.h"
 #include "handler.h"
+#include "swupdate_image.h"
 #include "util.h"
 #include "flash.h"
 #include "progress.h"
@@ -308,9 +308,20 @@ static int flash_write_nor(int mtdnum, struct img_type *img)
 		return -ENODEV;
 	}
 
-	if(flash_erase_sector(mtdnum, img->seek, img->size)) {
-		ERROR("I cannot erasing %s",
-			img->device);
+	long long size = get_output_size(img, true);
+	if (size < 0) {
+		size = get_mtd_size(mtdnum);
+		if (size < 0) {
+			ERROR("Could not get MTD %d device size", mtdnum);
+			return -ENODEV;
+		}
+
+		WARN("decompression-size not set, erasing flash device %s from %lld to %lld",
+			img->device, img->seek, size);
+	}
+	if (flash_erase_sector(mtdnum, img->seek, size)) {
+		ERROR("Failed to erase sectors on /dev/mtd%d (start: %llu, size: %lld)",
+			mtdnum, img->seek, size);
 		return -1;
 	}
 

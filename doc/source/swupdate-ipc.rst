@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 swupdate-ipc
@@ -61,7 +61,7 @@ swupdate-sendtohawkbit <action id> <status> <finished> <execution> <detail 1> <d
         Send Acknolwedge to Hawkbit server after an update if SWUpdate is set to wait for.
 
 sysrestart
-        Used with SWU handler, allow to perform a network restart
+        Used with SWU handler, allow one to perform a network restart
 
 -r
         optionally reboot the target after a successful update

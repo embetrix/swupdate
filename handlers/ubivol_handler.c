@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -15,7 +15,7 @@
 #include <string.h>
 
 #include <mtd/mtd-user.h>
-#include "swupdate.h"
+#include "swupdate_image.h"
 #include "handler.h"
 #include "flash.h"
 #include "util.h"
@@ -51,6 +51,26 @@ static struct ubi_part *search_volume_global(const char *str)
 	return NULL;
 }
 
+/* search for a UBI volume by name on a specified MTD partition */
+static struct ubi_part *search_volume_local(char *device, const char *volname)
+{
+	struct flash_description *flash = get_flash_info();
+	int mtdnum;
+	struct mtd_ubi_info *mtd_ubi_info;
+
+	mtdnum = get_mtd_from_device(device);
+	if (mtdnum < 0) {
+		mtdnum = get_mtd_from_name(device);
+	}
+	if (mtdnum < 0 || !mtd_dev_present(flash->libmtd, mtdnum)) {
+		ERROR("%s does not exist", device);
+		return NULL;
+	}
+	mtd_ubi_info = &flash->mtd_info[mtdnum];
+
+	return search_volume(volname, &mtd_ubi_info->ubi_partitions);
+}
+
 /**
  * check_replace - check for and validate replace property
  * @img: image information
@@ -58,27 +78,34 @@ static struct ubi_part *search_volume_global(const char *str)
  * @vol2: pointer to ubi_vol_info pointer. Will be set to point to the
  *	  to-be-replaced volume in case a volume is found and the
  *	  request is legal. Otherwise it is set to NULL.
+ * @rename: pointer to new target volume name pointer.
  *
  * Return: 0 if replace valid or no replace found. Otherwise <0.
  */
 static int check_replace(struct img_type *img,
 			 struct ubi_vol_info *vol1,
-			 struct ubi_vol_info **vol2)
+			 struct ubi_vol_info **vol2,
+			 char **rename)
 {
 	char *tmpvol_name;
 	struct ubi_part *tmpvol;
 
 	*vol2 = NULL;
+	*rename = NULL;
 	tmpvol_name = dict_get_value(&img->properties, "replaces");
 
 	if (tmpvol_name == NULL)
 		return 0;
 
-	tmpvol = search_volume_global(tmpvol_name);
+	if (strlen(img->device))
+		tmpvol = search_volume_local(img->device, tmpvol_name);
+	else
+		tmpvol = search_volume_global(tmpvol_name);
 
 	if (!tmpvol) {
-		ERROR("replace: unable to find a volume %s", tmpvol_name);
-		return -1;
+		INFO("replace: unable to find a volume %s, will rename", tmpvol_name);
+		*rename = tmpvol_name;
+		return 0;
 	}
 
 	/* check whether on same device */
@@ -129,6 +156,34 @@ static int swap_volnames(libubi_t libubi,
 }
 
 /**
+ * rename_vol - rename the given volume
+ * @vol: volume
+ * @name: new volume name
+ *
+ * Return: 0 if OK, <0 otherwise
+ */
+static int rename_vol(libubi_t libubi,
+			 struct ubi_vol_info *vol,
+			 char *name)
+{
+	struct ubi_rnvol_req rnvol;
+	char masternode[64];
+
+	snprintf(masternode, sizeof(masternode),
+		 "/dev/ubi%d", vol->dev_num);
+
+	TRACE("replace: rename UBI volume %s to %s on %s",
+	      vol->name, name, masternode);
+
+	rnvol.ents[0].vol_id = vol->vol_id;
+	rnvol.ents[0].name_len = strlen(name);
+	strlcpy(rnvol.ents[0].name, name, sizeof(rnvol.ents[0].name));
+	rnvol.count = 1;
+
+	return ubi_rnvols(libubi, masternode, &rnvol);
+}
+
+/**
  * check_ubi_alwaysremove - check the property always-remove for this image
  * @img: image information
  *
@@ -147,6 +202,7 @@ static int update_volume(libubi_t libubi, struct img_type *img,
 	char node[64];
 	int err;
 	char sbuf[128];
+	char *rn_vol;
 	struct ubi_vol_info *repl_vol;
 
 	bytes = get_output_size(img, true);
@@ -184,7 +240,7 @@ static int update_volume(libubi_t libubi, struct img_type *img,
 	}
 
 	/* check replace property */
-	if(check_replace(img, vol, &repl_vol))
+	if(check_replace(img, vol, &repl_vol, &rn_vol))
 		return -1;
 
 	fdout = open(node, O_RDWR);
@@ -192,9 +248,30 @@ static int update_volume(libubi_t libubi, struct img_type *img,
 		ERROR("cannot open UBI volume \"%s\"", node);
 		return -1;
 	}
-	err = ubi_update_start(libubi, fdout, bytes);
+
+	unsigned int retries = 3;
+	do {
+		/*
+		 * libubi just returns -1, errno can be checked
+		 * for the source of errors.
+		 * This should be changed in case ubi_update_start()
+		 * will do own error recovery in future.
+		 * Simply retries in case of error if the volume
+		 * is accessed by another process
+		 */
+		err = ubi_update_start(libubi, fdout, bytes);
+		retries--;
+		if (err) {
+			if (errno != EBUSY)
+				break;
+			WARN("Not possible to lock UBI, retry");
+			sleep(1);
+		}
+	} while (err && retries > 0);
+
 	if (err) {
 		ERROR("cannot start volume \"%s\" update", node);
+		close(fdout);
 		return -1;
 	}
 
@@ -215,6 +292,11 @@ static int update_volume(libubi_t libubi, struct img_type *img,
 		if(err)
 			ERROR("replace: failed to swap volume names %s<->%s: %d",
 			      vol->name, repl_vol->name, err);
+	} else if (rn_vol) {
+		err = rename_vol(libubi, vol, rn_vol);
+		if(err)
+			ERROR("replace: failed to rename %s to %s: %d",
+			      vol->name, rn_vol, err);
 	}
 
 	close(fdout);
@@ -362,7 +444,11 @@ static int wait_volume(struct img_type *img)
 	struct stat buf;
 	char node[64];
 
-	ubivol = search_volume_global(img->volname);
+	if (strlen(img->device))
+		ubivol = search_volume_local(img->device, img->volname);
+	else
+		ubivol = search_volume_global(img->volname);
+
 	if (!ubivol) {
 		ERROR("can't found volume %s", img->volname);
 		return -1;
@@ -413,7 +499,10 @@ static int install_ubivol_image(struct img_type *img,
 	}
 
 	/* find the volume to be updated */
-	ubivol = search_volume_global(img->volname);
+	if (strlen(img->device))
+		ubivol = search_volume_local(img->device, img->volname);
+	else
+		ubivol = search_volume_global(img->volname);
 
 	if (!ubivol) {
 		ERROR("Image %s should be stored in volume "
@@ -434,11 +523,14 @@ static int adjust_volume(struct img_type *cfg,
 	return resize_volume(cfg, cfg->partsize);
 }
 
-static int ubi_volume_get_info(char *name, int *dev_num, int *vol_id)
+static int ubi_volume_get_info(char *device, char *name, int *dev_num, int *vol_id)
 {
 	struct ubi_part *ubi_part;
 
-	ubi_part = search_volume_global(name);
+	if (strlen(device))
+		ubi_part = search_volume_local(device, name);
+	else
+		ubi_part = search_volume_global(name);
 	if (!ubi_part) {
 		ERROR("could not found UBI volume %s", name);
 		return -1;
@@ -495,7 +587,7 @@ static int swap_volume(struct img_type *img, void *data)
 			}
 
 			name[num] = volume->value;
-			if (ubi_volume_get_info(volume->value,
+			if (ubi_volume_get_info(img->device, volume->value,
 						&dev_num[num],
 						&vol_id[num]) < 0)
 				goto out;

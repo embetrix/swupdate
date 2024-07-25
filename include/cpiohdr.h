@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -11,8 +11,7 @@
  * but just what is needed by swupdate
  */
 
-#ifndef _CPIOHDR_SWUPD_H
-#define _CPIOHDR_SWUPD_H
+#pragma once
 
 /* Global swupdate defines */
 #include <stdbool.h>
@@ -29,6 +28,8 @@
 
 #define CPIO_NEWASCII 070701
 #define CPIO_CRCASCII 070702
+
+#define NPAD_BYTES(o) ((4 - (o % 4)) % 4)
 
 struct new_ascii_header
 {
@@ -59,7 +60,6 @@ struct filehdr {
 int get_cpiohdr(unsigned char *buf, struct filehdr *fhdr);
 int extract_cpio_header(int fd, struct filehdr *fhdr, unsigned long *offset);
 int extract_img_from_cpio(int fd, unsigned long offset, struct filehdr *fdh);
-void extract_padding(int fd, unsigned long *offset);
+void extract_padding(int fd);
 bool swupdate_verify_chksum(const uint32_t chk1, struct filehdr *fhdr);
-
-#endif
+int fill_buffer(int fd, unsigned char *buf, unsigned int nbytes);

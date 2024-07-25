@@ -1,9 +1,10 @@
 /*
  * (C) Copyright 2018
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
+#include <errno.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -13,19 +14,22 @@
 #include <parselib.h>
 #include <swupdate_settings.h>
 #include <channel_curl.h>
-#include "suricatta/suricatta.h"
-#include "suricatta_private.h"
+#include "server_utils.h"
 
-void suricatta_channel_settings(void *elem, channel_data_t *chan)
+int channel_settings(void *elem, void *data)
 {
 	char tmp[128];
+	channel_data_t *chan = (channel_data_t *)data;
 
-	get_field(LIBCFG_PARSER, elem, "retry",
-		&chan->retries);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "retry",
+		(int *)&chan->retries);
 
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "max-download-speed", tmp);
-	if (strlen(tmp))
+	if (strlen(tmp)) {
 		chan->max_download_speed = (unsigned int)ustrtoull(tmp, NULL, 10);
+		if (errno)
+			WARN("max-download-speed setting %s: ustrtoull failed", tmp);
+	}
 
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "retrywait", tmp);
 	if (strlen(tmp))
@@ -37,6 +41,9 @@ void suricatta_channel_settings(void *elem, channel_data_t *chan)
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "sslkey", tmp);
 	if (strlen(tmp))
 		SETSTRING(chan->sslkey, tmp);
+	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "sslkeypassword", tmp);
+	if (strlen(tmp))
+		SETSTRING(chan->sslkeypassword, tmp);
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "ciphers", tmp);
 	if (strlen(tmp))
 		SETSTRING(chan->ciphers, tmp);
@@ -49,6 +56,8 @@ void suricatta_channel_settings(void *elem, channel_data_t *chan)
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "interface", tmp);
 	if (strlen(tmp))
 		SETSTRING(chan->iface, tmp);
+
+	return 0;
 }
 
 server_op_res_t map_channel_retcode(channel_op_res_t response)

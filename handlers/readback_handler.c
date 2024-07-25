@@ -18,9 +18,8 @@
 #include <linux/fs.h>
 #endif
 
-#include "swupdate.h"
 #include "handler.h"
-#include "sslapi.h"
+#include "swupdate_image.h"
 #include "util.h"
 
 void readback_handler(void);

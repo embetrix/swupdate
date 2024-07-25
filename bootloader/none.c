@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2017
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -54,5 +54,5 @@ static bootloader none = {
 __attribute__((constructor))
 static void none_probe(void)
 {
-	(void)register_bootloader("none", &none);
+	(void)register_bootloader(BOOTLOADER_NONE, &none);
 }

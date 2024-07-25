@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 ===================================
@@ -26,8 +26,15 @@ easy be extended in the future if new use cases will arise.
 API Description
 ===============
 
-The communication runs via UDS (Unix Domain Socket). The socket is created
-at startup by SWUpdate in /tmp/sockinstctrl as per default configuration.
+The communication runs via Unix Domain Socket (UDS). The socket path
+is determined by
+
+- the ``CONFIG_SOCKET_CTRL_PATH`` compile-time configuration,
+- ``$RUNTIME_DIRECTORY/sockinstctrl`` if ``$RUNTIME_DIRECTORY`` is set,
+- ``$TMPDIR/sockinstctrl`` if ``$TMPDIR`` is set, or
+- ``/tmp/sockinstctrl``,
+
+in this order, and taken over from systemd or created by SWUpdate.
 This socket should, however, not be used directly but instead by the Client
 Library explained below.
 
@@ -129,7 +136,8 @@ other fields as:
         - *dry_run* : one of RUN_DEFAULT (set from command line), RUN_DRYRUN, RUN_INSTALL.
         - *info, len* : a variable length data that can be forwarded to the progress
           interface. The installer in SWUpdate does not evaluate it.
-        - *software_set* and *running_mode* : this allows one to set the `selection` for the update.
+        - *software_set* and *running_mode* : this allows one to set the `selection` for the update,
+          it should be accepted by swupdate (-q, --accepted-select option when swupdate is launched).
 
 Functions to set AES keys
 -------------------------
@@ -286,6 +294,18 @@ Install API
 
 This initiates an update: the initiator sends the request and start to stream the SWU in the same
 way as described in :ref:`install_api`.
+The ``POST /upload`` request contains:
+
+- the SWU file in its body
+- the following header field
+
+    ``Content-Type: multipart/form-data; boundary...``
+
+For example to stream the SWU file and start the update procedure using ``curl``:
+
+::
+
+        curl -F file=@update_file.swu http://host:8080/upload
 
 Restart API
 -----------
@@ -300,8 +320,7 @@ If configured (see post update command), this request will restart the device.
 WebSocket API
 -------------
 
-The integrated Webserver exposes a WebSocket API. The WebSocket protocol specification defines ws (WebSocket) and wss (WebSocket Secure) as two new uniform resource identifier (URI) schemes that are used for unencrypted and encrypted con
-nections, respectively and both of them are supported by SWUpdate.
+The integrated Webserver exposes a WebSocket API. The WebSocket protocol specification defines ws (WebSocket) and wss (WebSocket Secure) as two new uniform resource identifier (URI) schemes that are used for unencrypted and encrypted connections, respectively and both of them are supported by SWUpdate.
 A WebSocket provides full-duplex communication but it is used in SWUpdate to send events to an external host after
 each change in the update process. The Webserver sends JSON formatted responses as results of internal events.
 
@@ -336,6 +355,8 @@ This event is sent when the internal SWUpdate status change. Following status ar
         START
         RUN
         SUCCESS
+        FAILURE
+        DONE
 
 
 Example:

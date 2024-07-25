@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -95,8 +95,8 @@ static int get_run_as(void *elem, void *data)
 {
 	struct run_as *pid = (struct run_as *)data;
 
-	get_field(LIBCFG_PARSER, elem, "userid", &pid->userid);
-	get_field(LIBCFG_PARSER, elem, "groupid", &pid->groupid);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "userid", (int *)&pid->userid);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "groupid", (int *)&pid->groupid);
 
 	return 0;
 }

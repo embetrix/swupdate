@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  *
@@ -153,6 +153,7 @@ int swupdate_dgst_init(struct swupdate_cfg *sw, const char *keyfile)
 		goto dgst_init_error;
 	}
 
+#ifndef CONFIG_CMS_IGNORE_CERTIFICATE_PURPOSE
 	{
 		static char code_sign_name[] = "Code signing";
 		static char code_sign_sname[] = "codesign";
@@ -171,6 +172,12 @@ int swupdate_dgst_init(struct swupdate_cfg *sw, const char *keyfile)
 		ret = -EINVAL;
 		goto dgst_init_error;
 	}
+#endif
+
+#elif defined(CONFIG_SIGALG_GPG)
+	dgst->gpg_home_directory = sw->gpg_home_directory;
+	dgst->gpgme_protocol = sw->gpgme_protocol;
+	dgst->verbose = sw->verbose;
 #else
 	TRACE("public key / cert %s ignored, you need to set SIGALG", keyfile);
 #endif

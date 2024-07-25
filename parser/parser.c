@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2015-2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -20,6 +20,7 @@
 #include "bsdqueue.h"
 #include "util.h"
 #include "swupdate.h"
+#include "hw-compatibility.h"
 #include "parselib.h"
 #include "parsers.h"
 #include "swupdate_dict.h"
@@ -29,8 +30,6 @@
 
 #define NODEROOT (!strlen(CONFIG_PARSERROOT) ? \
 			"software" : CONFIG_PARSERROOT)
-
-#if defined(CONFIG_LIBCONFIG) || defined(CONFIG_JSON)
 
 typedef int (*parse_element)(parsertype p,
 		void *cfg, void *start, const char **nodes,
@@ -145,7 +144,7 @@ static int parser_follow_link(parsertype p, void *cfg, void *elem,
 	for (int j = 0; j < count_string_array(nodes); j++) {
 		linknodes[j] = nodes[j];
 	}
-	if (!set_find_path(linknodes, ref, tmp)) {
+	if (!set_find_path(linknodes, ref, &tmp)) {
 		free(linknodes);
 		return -1;
 	}
@@ -162,18 +161,13 @@ static int parser_follow_link(parsertype p, void *cfg, void *elem,
 static void *find_node(parsertype p, void *root, const char *field,
 			struct swupdate_cfg *swcfg)
 {
-	const char **nodes;
+	const char *nodes[MAX_PARSED_NODES];
 	void *node = NULL;
 
 	if (!field)
 		return NULL;
 
-	nodes = (const char **)calloc(MAX_PARSED_NODES, sizeof(*nodes));
-	if (!nodes)
-		return NULL;
-
 	node = find_node_and_path(p, root, field, swcfg, nodes);
-	free(nodes);
 
 	return node;
 }
@@ -201,7 +195,7 @@ static bool get_common_fields(parsertype p, void *cfg, struct swupdate_cfg *swcf
 	} else {
 		swcfg->bootloader_state_marker = true;
 		if((setting = find_node(p, cfg, "bootloader_state_marker", swcfg)) != NULL) {
-			get_field(p, setting, NULL, &swcfg->bootloader_state_marker);
+			GET_FIELD_BOOL(p, setting, NULL, &swcfg->bootloader_state_marker);
 			TRACE("Setting bootloader state marker: %s",
 			      swcfg->bootloader_state_marker == true ? "true" : "false");
 		}
@@ -212,20 +206,37 @@ static bool get_common_fields(parsertype p, void *cfg, struct swupdate_cfg *swcf
 	} else {
 		swcfg->bootloader_transaction_marker = true;
 		if((setting = find_node(p, cfg, "bootloader_transaction_marker", swcfg)) != NULL) {
-			get_field(p, setting, NULL, &swcfg->bootloader_transaction_marker);
+			GET_FIELD_BOOL(p, setting, NULL, &swcfg->bootloader_transaction_marker);
 			TRACE("Setting bootloader transaction marker: %s",
 			      swcfg->bootloader_transaction_marker == true ? "true" : "false");
 		}
 	}
 
+	/*
+	 * As default, reboot is initiated
+	 */
+	swcfg->reboot_required = true;
+	if((setting = find_node(p, cfg, "reboot", swcfg)) != NULL) {
+		GET_FIELD_BOOL(p, setting, NULL, &swcfg->reboot_required);
+	}
+
+	TRACE("reboot_required %d", swcfg->reboot_required);
+
+	/*
+	 * Check if SWU should be cached
+	 */
 	if ((setting = find_node(p, cfg, "output", swcfg)) != NULL) {
 		if (!strlen(swcfg->output)) {
 			TRACE("Output file set but not enabled with -o, ignored");
 		} else {
 			GET_FIELD_STRING(p, setting, NULL, swcfg->output);
-			get_field(p, setting, NULL, &swcfg->output);
 			TRACE("Incoming SWU stored : %s", swcfg->output);
 		}
+	}
+
+	if((setting = find_node(p, cfg, "namespace-for-vars", swcfg)) != NULL) {
+		GET_FIELD_STRING(p, setting, NULL, swcfg->namespace_for_vars);
+		TRACE("Namespaced used to store SWUpdate's vars: %s", swcfg->namespace_for_vars);
 	}
 
 	return true;
@@ -369,6 +380,12 @@ static int is_image_higher(struct swver *sw_ver_list,
     return false;
 }
 
+static void set_img_globals(struct img_type *img, struct swupdate_cfg *sw)
+{
+	img->bootloader = &sw->bootloader;
+	img->L = sw->lua_state;
+}
+
 static int run_embscript(parsertype p, void *elem, struct img_type *img,
 			 lua_State *L, const char *embscript)
 {
@@ -402,8 +419,6 @@ static int parse_common_attributes(parsertype p, void *elem, struct img_type *im
 	GET_FIELD_STRING(p, elem, "mtdname", image->mtdname);
 	GET_FIELD_STRING(p, elem, "filesystem", image->filesystem);
 	GET_FIELD_STRING(p, elem, "type", image->type);
-	get_field(p, elem, "offset", &offset);
-	GET_FIELD_STRING(p, elem, "offset", seek_str);
 	GET_FIELD_STRING(p, elem, "data", image->type_data);
 	get_hash_value(p, elem, image->sha256);
 
@@ -411,9 +426,11 @@ static int parse_common_attributes(parsertype p, void *elem, struct img_type *im
 	 * offset can be set as number or string. As string,
 	 * multiplier suffixes are allowed
 	 */
-	if (offset)
+	if (is_field_numeric(p, elem, "offset")) {
+		GET_FIELD_INT64(p, elem, "offset", (long long *)&offset);
 		image->seek = offset;
-	else {
+	} else {
+		GET_FIELD_STRING(p, elem, "offset", seek_str);
 		/* convert the offset handling multiplicative suffixes */
 		image->seek = ustrtoull(seek_str, NULL, 0);
 		if (errno){
@@ -432,13 +449,15 @@ static int parse_common_attributes(parsertype p, void *elem, struct img_type *im
 			return -1;
 		}
 	} else {
-		get_field(p, elem, "compressed", &image->compressed);
+		bool img_compressed = false;
+		GET_FIELD_BOOL(p, elem, "compressed", &img_compressed);
+		image->compressed = img_compressed ? COMPRESSED_TRUE : COMPRESSED_FALSE;
 	}
-	get_field(p, elem, "installed-directly", &image->install_directly);
-	get_field(p, elem, "preserve-attributes", &image->preserve_attributes);
-	get_field(p, elem, "install-if-different", &image->id.install_if_different);
-	get_field(p, elem, "install-if-higher", &image->id.install_if_higher);
-	get_field(p, elem, "encrypted", &image->is_encrypted);
+	GET_FIELD_BOOL(p, elem, "installed-directly", &image->install_directly);
+	GET_FIELD_BOOL(p, elem, "preserve-attributes", &image->preserve_attributes);
+	GET_FIELD_BOOL(p, elem, "install-if-different", &image->id.install_if_different);
+	GET_FIELD_BOOL(p, elem, "install-if-higher", &image->id.install_if_higher);
+	GET_FIELD_BOOL(p, elem, "encrypted", &image->is_encrypted);
 	GET_FIELD_STRING(p, elem, "ivt", image->ivt_ascii);
 
 	if (is_image_installed(&cfg->installed_sw_list, image)) {
@@ -503,7 +522,7 @@ static int _parse_partitions(parsertype p, void *cfg, void *setting, const char 
 			return -1;
 		}
 
-		get_field(p, elem, "size", &partition->partsize);
+		GET_FIELD_INT64(p, elem, "size", &partition->partsize);
 
 		add_properties(p, elem, partition);
 
@@ -511,6 +530,10 @@ static int _parse_partitions(parsertype p, void *cfg, void *setting, const char 
 		if (skip < 0) {
 			free_image(partition);
 			return -1;
+		}
+		if (skip || partition->skip != SKIP_NONE) {
+			free_image(partition);
+			continue;
 		}
 		TRACE("Partition: %s new size %lld bytes",
 			!strcmp(partition->type, "ubipartition") ? partition->volname : partition->device,
@@ -585,6 +608,8 @@ static int _parse_scripts(parsertype p, void *cfg, void *setting, const char **n
 		script->is_script = 1;
 
 		add_properties(p, elem, script);
+
+		set_img_globals(script, swcfg);
 
 		skip = run_embscript(p, elem, script, L, swcfg->embscript);
 		if (skip < 0) {
@@ -723,6 +748,82 @@ static int parse_bootloader(parsertype p, void *cfg, struct swupdate_cfg *swcfg,
 	return _parse_bootloader(p, cfg, setting, nodes, swcfg, L);
 }
 
+static int _parse_vars(parsertype p, void *cfg, void *setting, const char **nodes, struct swupdate_cfg *swcfg, lua_State *L)
+{
+	void *elem;
+	int count, i, skip, err;
+	struct img_type dummy;
+
+	if (setting == NULL) {
+		return 0;
+	}
+
+	count = get_array_length(p, setting);
+
+	for(i = (count - 1); i >= 0; --i) {
+		elem = get_elem_from_idx(p, setting, i);
+
+		if (!elem)
+			continue;
+
+		if (exist_field_string(p, elem, "ref")) {
+			err = parser_follow_link(p, cfg, elem, nodes, swcfg, _parse_bootloader, L);
+			if (err)
+				return err;
+			continue;
+		}
+
+		/*
+		 * dummy is just used for hooks
+		 */
+		memset(&dummy, 0, sizeof(dummy));
+
+		/*
+		 * Check for mandatory field
+		 */
+		if (!exist_field_string(p, elem, "name")) {
+		    ERROR("vars must have name field");
+		    return -1;
+		}
+
+		/*
+		 * Call directly get_field_string with size 0
+		 * to let allocate the place for the strings
+		 */
+		GET_FIELD_STRING(p, elem, "name", dummy.id.name);
+		GET_FIELD_STRING(p, elem, "value", dummy.id.version);
+		skip = run_embscript(p, elem, &dummy, L, swcfg->embscript);
+		if (skip < 0)
+			return -1;
+		if (skip)
+			continue;
+
+		/*
+		 * Store the variable in dictionary
+		 */
+		dict_set_value(&swcfg->vars, dummy.id.name, dummy.id.version);
+
+		TRACE("SWUpdate var: %s = %s",
+		       dummy.id.name,
+		       dict_get_value(&swcfg->vars, dummy.id.name));
+	}
+
+	return 0;
+}
+
+static int parse_vars(parsertype p, void *cfg, struct swupdate_cfg *swcfg, lua_State *L)
+{
+	void *setting;
+	const char *nodes[MAX_PARSED_NODES];
+
+	setting = find_node_and_path(p, cfg, "vars", swcfg, nodes);
+
+	if (!setting)
+		return 0;
+
+	return _parse_vars(p, cfg, setting, nodes, swcfg, L);
+}
+
 static int _parse_images(parsertype p, void *cfg, void *setting, const char **nodes, struct swupdate_cfg *swcfg, lua_State *L)
 {
 	void *elem;
@@ -775,7 +876,7 @@ static int _parse_images(parsertype p, void *cfg, void *setting, const char **no
 
 		add_properties(p, elem, image);
 
-		image->bootloader = &swcfg->bootloader;
+		set_img_globals(image, swcfg);
 
 		skip = run_embscript(p, elem, image, L, swcfg->embscript);
 		if (skip < 0) {
@@ -871,7 +972,7 @@ static int _parse_files(parsertype p, void *cfg, void *setting, const char **nod
 
 		add_properties(p, elem, file);
 
-		file->bootloader = &swcfg->bootloader;
+		set_img_globals(file, swcfg);
 
 		skip = run_embscript(p, elem, file, L, swcfg->embscript);
 		if (skip < 0) {
@@ -927,16 +1028,26 @@ static int parser(parsertype p, void *cfg, struct swupdate_cfg *swcfg)
 		swcfg->embscript = get_field_string(p, scriptnode, NULL);
 	}
 
+	L = lua_session_init(&swcfg->bootloader);
+
 	if (swcfg->embscript) {
-		TRACE("Found Lua Software:\n%s", swcfg->embscript);
-		L = lua_parser_init(swcfg->embscript, &swcfg->bootloader);
 		if (!L) {
+			ERROR("Required embedded script but no Lua not available");
+			return -1;
+		}
+		if (loglevel >= DEBUGLEVEL)
+			TRACE("Found Lua Software:\n%s", swcfg->embscript);
+		if (lua_load_buffer(L, swcfg->embscript)) {
 			ERROR("Required embedded script that cannot be loaded");
+			lua_close(L);
 			return -1;
 		}
 	}
+
+	swcfg->lua_state = L;
+
 	if (get_hw_revision(&swcfg->hw) < 0) {
-		TRACE("Hardware compatibiliy not found");
+		TRACE("Hardware compatibility not found");
 	}
 
 	/* Now parse the single elements */
@@ -944,16 +1055,14 @@ static int parser(parsertype p, void *cfg, struct swupdate_cfg *swcfg)
 		parse_files(p, cfg, swcfg, L) ||
 		parse_images(p, cfg, swcfg, L) ||
 		parse_scripts(p, cfg, swcfg, L) ||
-		parse_bootloader(p, cfg, swcfg, L);
+		parse_bootloader(p, cfg, swcfg, L) ||
+		parse_vars(p, cfg, swcfg, L);
 
 	/*
 	 * Move the partitions at the beginning to be processed
 	 * before other images
 	 */
 	parse_partitions(p, cfg, swcfg, L);
-
-	if (L)
-		lua_parser_exit(L);
 
 	if (LIST_EMPTY(&swcfg->images) &&
 	    LIST_EMPTY(&swcfg->scripts) &&
@@ -964,10 +1073,9 @@ static int parser(parsertype p, void *cfg, struct swupdate_cfg *swcfg)
 
 	return ret;
 }
-#endif
 
 #ifdef CONFIG_LIBCONFIG
-int parse_cfg (struct swupdate_cfg *swcfg, const char *filename)
+int parse_cfg(struct swupdate_cfg *swcfg, const char *filename, char **error)
 {
 	config_t cfg;
 	parsertype p = LIBCFG_PARSER;
@@ -979,12 +1087,11 @@ int parse_cfg (struct swupdate_cfg *swcfg, const char *filename)
 	/* Read the file. If there is an error, report it and exit. */
 	DEBUG("Parsing config file %s", filename);
 	if(config_read_file(&cfg, filename) != CONFIG_TRUE) {
-		printf("%s ", config_error_file(&cfg));
-		printf("%d ", config_error_line(&cfg));
-		printf("%s ", config_error_text(&cfg));
-
-		fprintf(stderr, "%s:%d - %s\n", config_error_file(&cfg),
-			config_error_line(&cfg), config_error_text(&cfg));
+		if (asprintf(error, "%s:%d - %s\n", config_error_file(&cfg),
+			     config_error_line(&cfg), config_error_text(&cfg)) == ENOMEM_ASPRINTF) {
+			ERROR("OOM when caching error");
+			return -ENOMEM;
+		}
 		config_destroy(&cfg);
 		return -1;
 	}
@@ -999,18 +1106,17 @@ int parse_cfg (struct swupdate_cfg *swcfg, const char *filename)
 	return ret;
 }
 #else
-int parse_cfg (struct swupdate_cfg __attribute__ ((__unused__)) *swcfg,
-		const char __attribute__ ((__unused__)) *filename)
+int parse_cfg(struct swupdate_cfg __attribute__((__unused__)) *swcfg,
+	      const char __attribute__((__unused__)) *filename,
+	      char __attribute__((__unused__)) **error)
 {
 	return -1;
 }
 #endif
 
-#ifdef CONFIG_JSON
-
 #define JSON_OBJECT_FREED 1
 
-int parse_json(struct swupdate_cfg *swcfg, const char *filename)
+int parse_json(struct swupdate_cfg *swcfg, const char *filename, char **error)
 {
 	int fd, ret;
 	struct stat stbuf;
@@ -1051,7 +1157,10 @@ int parse_json(struct swupdate_cfg *swcfg, const char *filename)
 
 	cfg = json_tokener_parse(string);
 	if (!cfg) {
-		ERROR("JSON File corrupted");
+		if (asprintf(error, "JSON File corrupted") == ENOMEM_ASPRINTF) {
+			ERROR("OOM when caching error");
+			return -ENOMEM;
+		}
 		free(string);
 		return -1;
 	}
@@ -1071,10 +1180,3 @@ int parse_json(struct swupdate_cfg *swcfg, const char *filename)
 
 	return ret;
 }
-#else
-int parse_json(struct swupdate_cfg __attribute__ ((__unused__)) *swcfg,
-		const char __attribute__ ((__unused__)) *filename)
-{
-	return -1;
-}
-#endif

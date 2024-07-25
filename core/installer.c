@@ -1,7 +1,6 @@
 /*
- * (C) Copyright 2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
- * 	on behalf of ifm electronic GmbH
+ * (C) Copyright 2013-2023
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -33,6 +32,8 @@
 #include "bootloader.h"
 #include "progress.h"
 #include "pctl.h"
+#include "swupdate_vars.h"
+#include "lua_util.h"
 
 /*
  * function returns:
@@ -156,18 +157,19 @@ static int extract_scripts(struct imglist *head)
 	return 0;
 }
 
-static int update_bootloader_env(struct swupdate_cfg *cfg, const char *script)
+static int prepare_var_script(struct dict *dict, const char *script)
 {
 	int fd;
-	int ret = 0;
 	struct dict_entry *bootvar;
 	char buf[MAX_BOOT_SCRIPT_LINE_LENGTH];
 
 	fd = openfileoutput(script);
-	if (fd < 0)
+	if (fd < 0) {
+		ERROR("Temporary file %s cannot be opened for writing", script);
 		return -1;
+	}
 
-	LIST_FOREACH(bootvar, &cfg->bootloader, next) {
+	LIST_FOREACH(bootvar, dict, next) {
 		char *key = dict_entry_get_key(bootvar);
 		char *value = dict_entry_get_value(bootvar);
 
@@ -182,13 +184,57 @@ static int update_bootloader_env(struct swupdate_cfg *cfg, const char *script)
 	}
 	close(fd);
 
+	return 0;
+}
+
+static int generate_swversions(struct swupdate_cfg *cfg)
+{
+	FILE *fp;
+	struct sw_version *swver;
+	struct swver *sw_ver_list = &cfg->installed_sw_list;
+
+	fp = fopen(cfg->output_swversions, "w");
+	if (!fp)
+		return -EACCES;
+
+	LIST_FOREACH(swver, sw_ver_list, next) {
+		fprintf(fp, "%s\t\t%s\n", swver->name, swver->version);
+	}
+	fclose(fp);
+
+	return 0;
+}
+
+static int update_bootloader_env(struct swupdate_cfg *cfg, const char *script)
+{
+	int ret = 0;
+
+	ret = prepare_var_script(&cfg->bootloader, script);
+	if (ret)
+		return ret;
+
 	if ((ret = bootloader_apply_list(script)) < 0) {
+		ERROR("Bootloader-specific error %d updating its environment", ret);
+	}
+
+	return ret;
+}
+
+static int update_swupdate_vars(struct swupdate_cfg *cfg, const char *script)
+{
+	int ret = 0;
+
+	ret = prepare_var_script(&cfg->vars, script);
+	if (ret)
+		return ret;
+
+	if ((ret = swupdate_vars_apply_list(script, cfg->namespace_for_vars)) < 0) {
 		ERROR("Bootloader-specific error %d updating its environment", ret);
 	}
 	return ret;
 }
 
-static int run_prepost_scripts(struct imglist *list, script_fn type)
+int run_prepost_scripts(struct imglist *list, script_fn type)
 {
 	int ret;
 	struct img_type *img;
@@ -205,7 +251,11 @@ static int run_prepost_scripts(struct imglist *list, script_fn type)
 				.data = hnd->data
 			};
 
+			swupdate_progress_inc_step(img->fname, hnd->desc);
+			swupdate_progress_update(0);
 			ret = hnd->installer(img, &data);
+			swupdate_progress_update(100);
+			swupdate_progress_step_completed();
 			if (ret)
 				return ret;
 		}
@@ -245,6 +295,44 @@ int install_single_image(struct img_type *img, bool dry_run)
 	swupdate_progress_step_completed();
 
 	return ret;
+}
+
+static int update_installed_image_version(struct swver *sw_ver_list,
+		struct img_type *img)
+{
+	struct sw_version *swver;
+	struct sw_version *swcomp;
+
+	if (!sw_ver_list)
+		return false;
+
+	LIST_FOREACH(swver, sw_ver_list, next) {
+		/*
+		 * If component is already installed, update the version
+		 */
+		if (!strncmp(img->id.name, swver->name, sizeof(img->id.name))) {
+			strncpy(swver->version, img->id.version, sizeof(img->id.version));
+			return true;
+		}
+	}
+
+	if (!strlen(img->id.version))
+		return false;
+
+	/*
+	 * No previous version of this component is installed. Create a new entry.
+	 */
+	swcomp = (struct sw_version *)calloc(1, sizeof(struct sw_version));
+	if (!swcomp) {
+		ERROR("Could not create new version entry.");
+		return false;
+	}
+
+	strlcpy(swcomp->name, img->id.name, sizeof(swcomp->name));
+	strlcpy(swcomp->version, img->id.version, sizeof(swcomp->version));
+	LIST_INSERT_HEAD(sw_ver_list, swcomp, next);
+
+	return true;
 }
 
 /*
@@ -338,6 +426,8 @@ int install_images(struct swupdate_cfg *sw)
 
 		close(img->fdin);
 
+		update_installed_image_version(&sw->installed_sw_list, img);
+
 		if (dropimg)
 			free_image(img);
 
@@ -358,16 +448,34 @@ int install_images(struct swupdate_cfg *sw)
 		return ret;
 	}
 
+	char* script = alloca(strlen(TMPDIR)+strlen(BOOT_SCRIPT_SUFFIX)+1);
+	sprintf(script, "%s%s", TMPDIR, BOOT_SCRIPT_SUFFIX);
+
+	if (!LIST_EMPTY(&sw->vars)) {
+		ret = update_swupdate_vars(sw, script);
+		if (ret) {
+			return ret;
+		}
+	}
+
 	if (!LIST_EMPTY(&sw->bootloader)) {
-		char* bootscript = alloca(strlen(TMPDIR)+strlen(BOOT_SCRIPT_SUFFIX)+1);
-		sprintf(bootscript, "%s%s", TMPDIR, BOOT_SCRIPT_SUFFIX);
-		ret = update_bootloader_env(sw, bootscript);
+		ret = update_bootloader_env(sw, script);
 		if (ret) {
 			return ret;
 		}
 	}
 
 	ret |= run_prepost_scripts(&sw->bootscripts, POSTINSTALL);
+
+	/*
+	 * Should we generate a list with installed software?
+	 */
+	if (strlen(sw->output_swversions)) {
+		ret |= generate_swversions(sw);
+		if (ret) {
+			ERROR("%s cannot be opened", sw->output_swversions);
+		}
+	}
 
 	return ret;
 }
@@ -433,8 +541,20 @@ void cleanup_files(struct swupdate_cfg *software) {
 		}
 	}
 
+	/*
+	 * drop environment databases
+	 */
 	dict_drop_db(&software->bootloader);
+	dict_drop_db(&software->vars);
 
+	/*
+	 * Drop Lua State if instantiated
+	 */
+	if (software->lua_state) {
+		unregister_session_handlers();
+		lua_exit(software->lua_state);
+		software->lua_state = NULL;
+	}
 	if (asprintf(&fn, "%s%s", TMPDIR, BOOT_SCRIPT_SUFFIX) != ENOMEM_ASPRINTF) {
 		remove_sw_file(fn);
 		free(fn);

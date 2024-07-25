@@ -1,14 +1,14 @@
 /*
  * (C) Copyright 2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
 
-#ifndef _SWUPDATE_SSL_H
-#define _SWUPDATE_SSL_H
+#pragma once
 
 #include <stdint.h>
+#include "util.h"
 
 #define SHA_DEFAULT	"sha256"
 
@@ -20,6 +20,7 @@
 
 #ifdef CONFIG_PKCS11
 #include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/wc_pkcs11.h>
 // Exclude p11-kit's pkcs11.h to prevent conflicting with wolfssl's
@@ -38,8 +39,10 @@
 #include <openssl/hmac.h>
 #include <openssl/aes.h>
 #include <openssl/opensslv.h>
+#include <openssl/cms.h>
 #elif defined(CONFIG_SSL_IMPL_WOLFSSL)
 #include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
 #include <wolfssl/openssl/bio.h>
 #include <wolfssl/openssl/objects.h>
 #include <wolfssl/openssl/err.h>
@@ -50,12 +53,12 @@
 #include <wolfssl/openssl/hmac.h>
 #include <wolfssl/openssl/aes.h>
 #include <wolfssl/openssl/opensslv.h>
+#include <wolfssl/openssl/pkcs7.h>
 #endif
 
 #if defined(CONFIG_SSL_IMPL_OPENSSL) || defined(CONFIG_SSL_IMPL_WOLFSSL)
 
 #ifdef CONFIG_SIGALG_CMS
-#include <openssl/cms.h>
 
 static inline uint32_t SSL_X509_get_extension_flags(X509 *x)
 {
@@ -83,7 +86,9 @@ static inline uint32_t SSL_X509_get_extended_key_usage(X509 *x)
 #define X509_PURPOSE_CODE_SIGN EXTKEYUSE_CODESIGN
 #define SSL_PURPOSE_EMAIL_PROT EXTKEYUSE_EMAILPROT
 #else
+#if !defined(X509_PURPOSE_CODE_SIGN)
 #define X509_PURPOSE_CODE_SIGN (X509_PURPOSE_MAX + 1)
+#endif
 #define SSL_PURPOSE_EMAIL_PROT X509_PURPOSE_SMIME_SIGN
 #endif
 #define SSL_PURPOSE_CODE_SIGN  X509_PURPOSE_CODE_SIGN
@@ -104,6 +109,11 @@ struct swupdate_digest {
 	EVP_CIPHER_CTX ctxdec;
 #else
 	EVP_CIPHER_CTX *ctxdec;
+#endif
+#ifdef CONFIG_SIGALG_GPG
+	char *gpg_home_directory;
+	bool verbose;
+	char *gpgme_protocol;
 #endif
 };
 
@@ -154,6 +164,11 @@ struct swupdate_digest {
 #elif defined(CONFIG_ENCRYPTED_IMAGES)
 	mbedtls_cipher_context_t mbedtls_cipher_context;
 #endif /* CONFIG_PKCS11 */
+#ifdef CONFIG_SIGALG_GPG
+	char *gpg_home_directory;
+	int verbose;
+	char *gpgme_protocol;
+#endif
 };
 
 #else /* CONFIG_SSL_IMPL */
@@ -196,11 +211,14 @@ int swupdate_DECRYPT_final(struct swupdate_digest *dgst, unsigned char *buf,
 				int *outlen);
 void swupdate_DECRYPT_cleanup(struct swupdate_digest *dgst);
 #else
-/*
- * Note: macro for swupdate_DECRYPT_init is
- * just to avoid compiler warnings
- */
-#define swupdate_DECRYPT_init(key, keylen, iv) (((key != NULL) | (ivt != NULL)) ? NULL : NULL)
+UNUSED static inline struct swupdate_digest *swupdate_DECRYPT_init(
+		unsigned char UNUSED *key,
+		char UNUSED keylen,
+		unsigned char UNUSED *iv)
+{
+	ERROR("SWUpdate was built without support for encrypted images");
+	return NULL;
+}
 #define swupdate_DECRYPT_update(p, buf, len, cbuf, inlen) (-1)
 #define swupdate_DECRYPT_final(p, buf, len) (-1)
 #define swupdate_DECRYPT_cleanup(p)
@@ -211,6 +229,3 @@ void swupdate_DECRYPT_cleanup(struct swupdate_digest *dgst);
 #define SSL_PURPOSE_CODE_SIGN  -1
 #define SSL_PURPOSE_DEFAULT -1
 #endif
-
-#endif
-

@@ -42,10 +42,23 @@ struct mg_http_multipart_stream {
 
 static void mg_http_free_proto_data_mp_stream(
 		struct mg_http_multipart_stream *mp) {
-	free((void *) mp->boundary.ptr);
-	free((void *) mp->part.name.ptr);
-	free((void *) mp->part.filename.ptr);
+	free((void *) mp->boundary.buf);
+	free((void *) mp->part.name.buf);
+	free((void *) mp->part.filename.buf);
 	memset(mp, 0, sizeof(*mp));
+}
+
+static const char *mg_strstr(const struct mg_str haystack,
+                      const struct mg_str needle) {
+  size_t i;
+  if (needle.len > haystack.len) return NULL;
+  if (needle.len == 0) return haystack.buf;
+  for (i = 0; i <= haystack.len - needle.len; i++) {
+    if (memcmp(haystack.buf + i, needle.buf, needle.len) == 0) {
+      return haystack.buf + i;
+    }
+  }
+  return NULL;
 }
 
 static void mg_http_multipart_begin(struct mg_connection *c,
@@ -63,7 +76,7 @@ static void mg_http_multipart_begin(struct mg_connection *c,
 	}
 
 	/* Content-type should start with "multipart" */
-	if (ct->len < 9 || strncmp(ct->ptr, "multipart", 9) != 0) {
+	if (ct->len < 9 || strncmp(ct->buf, "multipart", 9) != 0) {
 		return;
 	}
 
@@ -95,13 +108,10 @@ static void mg_http_multipart_begin(struct mg_connection *c,
 		}
 		mp_stream->state = MPS_BEGIN;
 		mp_stream->boundary = mg_strdup(boundary);
-		mp_stream->part.name.ptr = mp_stream->part.filename.ptr = NULL;
+		mp_stream->part.name.buf = mp_stream->part.filename.buf = NULL;
 		mp_stream->part.name.len = mp_stream->part.filename.len = 0;
 		mp_stream->len = hm->body.len;
 		c->pfn_data = mp_stream;
-
-		mg_call(c, MG_EV_HTTP_MULTIPART_REQUEST, hm);
-
 		mg_iobuf_del(io, 0, hm->head.len + 2);
 	}
 }
@@ -118,7 +128,7 @@ static size_t mg_http_multipart_call_handler(struct mg_connection *c, int ev,
 	mp.part.name = mp_stream->part.name;
 	mp.part.filename = mp_stream->part.filename;
 	mp.user_data = mp_stream->user_data;
-	mp.part.body.ptr = data;
+	mp.part.body.buf = (char*) data;
 	mp.part.body.len = data_len;
 	mp.num_data_consumed = data_len;
 	mp.len = mp_stream->len;
@@ -132,15 +142,10 @@ static void mg_http_multipart_finalize(struct mg_connection *c) {
 	struct mg_http_multipart_stream *mp_stream = c->pfn_data;
 
 	mg_http_multipart_call_handler(c, MG_EV_HTTP_PART_END, NULL, 0);
-	free((void *) mp_stream->part.filename.ptr);
-	mp_stream->part.filename.ptr = NULL;
-	free((void *) mp_stream->part.name.ptr);
-	mp_stream->part.name.ptr = NULL;
-	mg_http_multipart_call_handler(c, MG_EV_HTTP_MULTIPART_REQUEST_END, NULL, 0);
 	mg_http_free_proto_data_mp_stream(mp_stream);
 	mp_stream->state = MPS_FINISHED;
 	free(mp_stream);
-	c->label[0] = '\0';
+	c->data[0] = '\0';
 }
 
 static int mg_http_multipart_wait_for_boundary(struct mg_connection *c) {
@@ -198,11 +203,11 @@ static int mg_http_multipart_process_boundary(struct mg_connection *c) {
 		   (line_len = mg_get_line_len(block_begin, data_size)) != 0) {
 		mp_stream->len -= (line_len + 2);
 		if (line_len > sizeof(CONTENT_DISPOSITION) &&
-			mg_ncasecmp(block_begin, CONTENT_DISPOSITION,
+			strncmp(block_begin, CONTENT_DISPOSITION,
 						sizeof(CONTENT_DISPOSITION) - 1) == 0) {
 			struct mg_str header;
 
-			header.ptr = block_begin + sizeof(CONTENT_DISPOSITION) - 1;
+			header.buf = (char*) (block_begin + sizeof(CONTENT_DISPOSITION) - 1);
 			header.len = line_len - sizeof(CONTENT_DISPOSITION) - 1;
 
 			mp_stream->part.name = mg_strdup(mg_http_get_header_var(header, mg_str_n("name", 4)));
@@ -214,7 +219,7 @@ static int mg_http_multipart_process_boundary(struct mg_connection *c) {
 			continue;
 		}
 
-		if (line_len == 2 && mg_ncasecmp(block_begin, "\r\n", 2) == 0) {
+		if (line_len == 2 && strncmp(block_begin, "\r\n", 2) == 0) {
 			if (mp_stream->processing_part != 0) {
 				mg_http_multipart_call_handler(c, MG_EV_HTTP_PART_END, NULL, 0);
 			}
@@ -270,6 +275,11 @@ static int mg_http_multipart_continue_wait_for_chunk(struct mg_connection *c) {
 
 static void mg_http_multipart_continue(struct mg_connection *c) {
 	struct mg_http_multipart_stream *mp_stream = c->pfn_data;
+
+	if(mp_stream == NULL) {
+		return;
+	}
+
 	while (1) {
 		switch (mp_stream->state) {
 			case MPS_BEGIN: {
@@ -305,8 +315,7 @@ static void mg_http_multipart_continue(struct mg_connection *c) {
 	}
 }
 
-void multipart_upload_handler(struct mg_connection *c, int ev, void *ev_data,
-		void __attribute__ ((__unused__)) *fn_data)
+void multipart_upload_handler(struct mg_connection *c, int ev, void *ev_data)
 {
 	struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 	struct mg_http_multipart_stream *mp_stream = c->pfn_data;
@@ -326,16 +335,16 @@ void multipart_upload_handler(struct mg_connection *c, int ev, void *ev_data,
 		return;
 	}
 
-	if (ev == MG_EV_HTTP_CHUNK) {
-		if(mg_vcasecmp(&hm->method, "POST") != 0) {
+	if (ev == MG_EV_READ) {
+		if(mg_strcasecmp(hm->method, mg_str("POST")) != 0) {
 			mg_http_reply(c, 405, "", "%s", "Method Not Allowed\n");
 			c->is_draining = 1;
 			return;
 		}
 		s = mg_http_get_header(hm, "Content-Type");
-		if (s != NULL && s->len >= 9 && strncmp(s->ptr, "multipart", 9) == 0) {
+		if (s != NULL && s->len >= 9 && strncmp(s->buf, "multipart", 9) == 0) {
 			/* New request - new proto data */
-			c->label[0] = 'M';
+			c->data[0] = 'M';
 
 			mg_http_multipart_begin(c, hm);
 			mg_http_multipart_continue(c);

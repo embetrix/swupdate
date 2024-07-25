@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 =================================================
@@ -23,7 +23,7 @@ for an explanation of basic types.
 The whole description must be contained in the sw-description file itself:
 using of the #include directive is not allowed by SWUpdate.
 
-The following example explains better the implemented tags:
+The following example explains the implemented tags:
 
 ::
 
@@ -763,7 +763,9 @@ with an error if the result is <> 0.
 They are copied into a temporary directory before execution and their name must
 be unique inside the same cpio archive.
 
-If no type is given, SWUpdate default to "lua".
+If no type is given, SWUpdate default to "lua". Please note that running a shell script
+opens a set of different security issues, check also chapter "Best practise".
+
 
 Lua
 ...
@@ -794,11 +796,23 @@ called before installing the images.
 
 	function postinst()
 
+
 SWUpdate scans for all scripts and check for a postinst function. It is
 called after installing the images.
 
+::
+
+	function postfailure()
+
+Only in case an update fails, SWUpdate scans for all scripts and check
+for a postfailure function. This could be useful in case it is necessary
+to restore a previous state, for example, in case the application was
+stop, it should run again.
+
 shellscript
 ...........
+
+SWUpdate will run the binary shell "/bin/sh" to execute the script.
 
 ::
 
@@ -809,9 +823,9 @@ shellscript
 		}
 	);
 
-Shell scripts are called via system command.
+Shell scripts are called by forking the process and running the shell as /bin/sh.
 SWUpdate scans for all scripts and calls them before and after installing
-the images. SWUpdate passes 'preinst' or 'postinst' as first argument to
+the images. SWUpdate passes 'preinst', 'postinst' or 'postfailure' as first argument to
 the script.
 If the data attribute is defined, its value is passed as the last argument(s)
 to the script.
@@ -832,6 +846,14 @@ preinstall are shell scripts and called via system command.
 SWUpdate scans for all scripts and calls them before installing the images.
 If the data attribute is defined, its value is passed as the last argument(s)
 to the script.
+
+Note that cannot be ensured that preinstall scripts run before an artifact is
+installed in streaming mode. In fact, if streaming is activated, the artifact must
+be installed as soon as it is received from network because there is no temporary
+copy. Because there is no fix order in the SWU, an artifact can be packed before any
+script in the SWU. The right way is to write an "embedded-script" in Lua inside
+sw-description: because it becomes part of sw-description, it runs when sw-description is
+parsed and before any handler runs, even before a partition handler.
 
 postinstall
 ...........
@@ -887,6 +909,33 @@ environment variable "ustate" (default) to `STATE_INSTALLED=1` or
 `STATE_FAILED=3` after an installation. This behavior can be turned off
 globally via the `-m` option to SWUpdate or per `sw-description` via the
 boolean switch "bootloader_state_marker".
+
+reboot flag
+-----------
+
+It is possible to signal that a reboot for a specific update is not required.
+This information is evaluated by SWUpdate just to inform a backend about the
+transaction result. If a postinstall script (command line parameter -p) is
+passed at the startup to perform a reboot, it will be executed anyway because
+SWUpdate cannot know the nature of this script.
+
+SWUpdate sends this information to the progress interface and it is duty of the
+listeners to interprete the information. The attribute is a boolean:
+
+::
+
+        reboot = false;
+
+Attribute belongs to the general section, where also version belongs. It is
+not required to activate the flag with `reboot = true` because it is the
+default behavior, so just disabling makes sense.
+
+The tool `swupdate-progress` interprets the flag: if it was started with
+reboot support (-r parameter), it checks if a "no-reboot" message is received
+and disables to reboot the device for this specific update. When the transaction
+completes, the reboot feature is activated again in case a new update will require to
+reboot the device. This allows to have on the fly updates, where not the whole
+software is updated and a reboot is not required.
 
 bootloader
 ----------
@@ -952,6 +1001,36 @@ For backward compatibility with previously built `.swu` images, the
 "uboot" group name is still supported as an alias. However, its usage
 is deprecated.
 
+SWUpdate persistent variables
+-----------------------------
+
+Not all updates require to inform the bootloader about the update, and in many cases a
+reboot is not required. There are also cases where changing bootloader's environment
+is unwanted due to restriction for security.
+SWUpdate needs then some information after new software is running to understand if
+everything is fine or some actions like a fallback are needed. SWUpdate can store
+such as information in variables (like shell variables), that can be stored persistently.
+The library `libubootenv` provide a way for saving such kind as database in a power-cut safe mode.
+It uses the algorythm originally implemented in the U-Boot bootloader. It is then guaranteed
+that the system will always have a valid instance of the environment. The library supports multiple
+environment databases at the same time, identifies with `namespaces`.
+SWUpdate should be configured to set the namespace used for own variables. This is done by setting
+the attribute *namespace-vars* in the runtime configuration file (swupdate.cfg). See also
+example/configuration/swupdate.cfg for details.
+
+The format is the same used with bootloader for single variable:
+
+::
+
+	vars: (
+		{
+			name = <Variable name>;
+			value = <Variable value>;
+		}
+	)
+
+SWUpdate will set these variables all at once like the bootloader variables. These environment
+is stored just before writing the bootloader environment, that is always the last step in an update.
 
 Board specific settings
 -----------------------
@@ -1184,7 +1263,7 @@ These attributes are used for an embedded-script:
 
 ::
 
-		embedded-script = "<Lua code">
+		embedded-script = "<Lua code>"
 
 It must be taken into account that the parser has already run and usage of double quotes can
 interfere with the parser. For this reason, each double quote in the script must be escaped.
@@ -1369,6 +1448,9 @@ There are 4 main sections inside sw-description:
    +-------------+----------+------------+---------------------------------------+
    | description | string   |            | user-friendly description of the      |
    |             |          |            | swupdate archive (any string)         |
+   +-------------+----------+------------+---------------------------------------+
+   | reboot      | bool     |            | allows to disable reboot for the      |
+   |             |          |            | current running update                |
    +-------------+----------+------------+---------------------------------------+
    | install-if\ | bool     | images     | flag                                  |
    | -different  |          | files      | if set, name and version are          |

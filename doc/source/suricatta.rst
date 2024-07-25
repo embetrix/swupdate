@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 =====================
@@ -36,7 +36,7 @@ Running suricatta
 -----------------
 
 After having configured and compiled SWUpdate with enabled suricatta
-support,
+support for hawkBit,
 
 .. code::
 
@@ -52,6 +52,11 @@ when using hawkBit as server. As an example,
 runs SWUpdate in suricatta daemon mode with log-level ``TRACE``, polling
 a hawkBit instance at ``http://10.0.0.2:8080`` with tenant ``default``
 and device ID ``25``.
+
+If multiple server support is compiled in, the ``-S`` / ``--server``
+option or a ``server`` entry in the configuration file's ``[suricatta]``
+section selects the one to use at run-time. For convenience, when having
+support for just one server compiled-in, this is chosen automatically.
 
 
 Note that on startup when having installed an update, suricatta
@@ -112,13 +117,23 @@ to implement:
 
 .. code:: c
 
-    server_op_res_t server_has_pending_action(int *action_id);
-    server_op_res_t server_install_update(void);
-    server_op_res_t server_send_target_data(void);
-    unsigned int server_get_polling_interval(void);
-    server_op_res_t server_start(const char *cfgfname, int argc, char *argv[]);
-    server_op_res_t server_stop(void);
-    server_op_res_t server_ipc(int fd);
+    typedef struct {
+        server_op_res_t has_pending_action(int *action_id);
+        server_op_res_t install_update(void);
+        server_op_res_t send_target_data(void);
+        unsigned int get_polling_interval(void);
+        server_op_res_t start(const char *cfgfname, int argc, char *argv[]);
+        server_op_res_t stop(void);
+        server_op_res_t ipc(int fd);
+        void (*help)(void);
+    } server_t;
+
+These functions constituting a particular suricatta server implementation
+have to be registered for being selectable at run-time by calling
+``register_server()`` (see ``include/suricatta/server.h``) with
+a name and a ``server_t`` struct pointer implemented in a
+``__attribute__((constructor))`` marked function, see
+``suricatta/server_hawkbit.c`` as example.
 
 The type ``server_op_res_t`` is defined in ``include/suricatta/suricatta.h``.
 It represents the valid function return codes for a server's implementation.
@@ -133,10 +148,8 @@ one for hawkBit into the ``menu "Server"`` section is sufficient.
 
     config SURICATTA_HAWKBIT
         bool "hawkBit support"
-        depends on HAVE_LIBCURL
-        depends on HAVE_JSON_C
+        default y
         select JSON
-        select CURL
         help
           Support for hawkBit server.
           https://projects.eclipse.org/projects/iot.hawkbit
@@ -150,8 +163,186 @@ if ``SURICATTA_HAWKBIT`` was selected while configuring SWUpdate.
 .. code:: bash
 
     ifneq ($(CONFIG_SURICATTA_HAWKBIT),)
-    lib-$(CONFIG_SURICATTA) += server_hawkbit.o
+    obj-$(CONFIG_SURICATTA) += server_hawkbit.o
     endif
+
+
+Support for wfx
+---------------
+
+The `wfx`_ server is supported by the Lua Suricatta module
+``suricatta/server_wfx.lua`` (cf. Section `Support for Suricatta Modules in Lua`_).
+Specifically, it implements a binding to the `Device Artifact Update`_ (DAU) workflow
+family.
+
+If enabled via ``CONFIG_SURICATTA_WFX``, the wfx Lua Suricatta module is embedded
+into the SWUpdate binary so that no extra deployment steps are required. Note that
+this is purely a convenience shortcut for the installation of a Lua Suricatta module
+as described in `Support for Suricatta Modules in Lua`_.
+
+.. _wfx:  https://github.com/siemens/wfx
+.. _Device Artifact Update:  https://github.com/siemens/wfx/tree/main/workflow/dau
+
+
+Job Definition
+..............
+
+As being a general purpose workflow executor, wfx doesn't impose a particular job
+definition nor schema, except that it's in JSON format. Instead, the job definition
+is a contract between the operator creating jobs, each possibly following a different
+workflow, and the client(s) executing those jobs in lock-step with the wfx.
+
+The wfx Lua Suricatta module understands job definitions as in the following
+example (see ``job.definition.json_schema`` in ``suricatta/server_wfx.lua``):
+
+.. code:: json
+
+    {
+        "version": "1.0",
+        "type": ["firmware", "dummy"],
+        "artifacts": [
+            {
+                "name": "Example Device Firmware Artifact",
+                "version": "1.1",
+                "uri": "http://localhost:8080/download/example_artifact.swu"
+            }
+        ]
+    }
+
+The ``type`` list field allows to label update jobs. Labels are sent ``:``-concatenated
+to the progress interface on `Update Activation`_. The only predefined label ``firmware``
+instructs the wfx Lua Suricatta module to record an installed update to the bootloader
+environment (see :doc:`bootloader_interface`).
+Within the artifacts list, only the ``uri`` field is strictly required for each artifact
+while the fields ``name`` and ``version`` are used for informational purposes, if provided.
+Further fields, including top-level fields, are ignored on purpose and may be freely used,
+e.g., to enrich the job definition with metadata for update management.
+
+Since wfx is not concerned with the job definition except for conveying it to the
+client (i.e. SWUpdate), it can be adapted to specific needs by feeding a different
+job definition into the wfx on job creation and adapting the verification and job
+handling methods in the wfx Lua Suricatta module's ``job.definition = {...}`` Table.
+
+
+Workflows
+.........
+
+The two Device Artifact Update (DAU) workflows `wfx.workflow.dau.direct`_ and
+`wfx.workflow.dau.phased`_ are supported by the wfx Lua Suricatta module.
+Hint: Use wfx's ``wfx-viewer`` command line tool to visualize the  YAML
+workflows in SVG or PlantUML format.
+
+
+For each transition in a workflow for which the ``eligible`` field contains
+``CLIENT``, e.g.,
+
+.. code:: yaml
+
+    transitions:
+      - from: <FROM_STATE>
+        to: <TO_STATE>
+        eligible: CLIENT
+
+there has to be a matching transition execution function defined in the wfx Lua
+Suricatta module. It executes the client actions to go from state ``<FROM_STATE>``
+to state ``<TO_STATE>`` and finally sends the new job status to the wfx, updating it:
+
+.. code:: lua
+
+    job.workflow.dispatch:set(
+        "<FROM_STATE>",
+        "<TO_STATE>",
+        --- @param  self  job.workflow.transition
+        --- @param  job   job
+        --- @return transition.result
+        function(self, job)
+            if not job.status
+                :set({
+                    state = self.to.name, -- resolves to `<TO_STATE>`
+                    message = ("[%s] <TO_STATE> reached"):format(self.to.name),
+                    progress = 100,
+                })
+                :send() then
+                -- Do not try to execute further transitions, yield to wfx.
+                return transition.result.FAIL_YIELD
+            end
+            return transition.result.COMPLETED
+        end
+    )
+
+See ``suricatta/server_wfx.lua`` for examples of such transition execution functions.
+
+
+New or adapted workflows are supported by appropriately defining/modifying the
+transition execution functions in ``suricatta/server_wfx.lua`` -- or taking it as
+inspiration and creating a new wfx Lua Suricatta module as described in `Support
+for Suricatta Modules in Lua`_.
+
+.. _wfx.workflow.dau.phased:  https://github.com/siemens/wfx/blob/main/workflow/dau/wfx.workflow.dau.phased.yml
+.. _wfx.workflow.dau.direct:  https://github.com/siemens/wfx/blob/main/workflow/dau/wfx.workflow.dau.direct.yml
+
+
+Update Activation
+.................
+
+The Device Artifact Update (DAU) workflows offer a dedicated activation step in
+the update steps sequence to decouple artifact installation and activation times
+so to not, e.g., upon a power-cut, prematurely test-boot into the new firmware
+after installation until the activation is actually due.
+
+When the activation step is executed, the wfx Lua Suricatta module sends a progress
+message (see :doc:`progress`) upon which a progress client executes or schedules
+activation measures. For example, the following JSON is sent as the progress
+message's ``.info`` field on activation of the `Job Definition`_ example given above:
+
+.. code:: json
+
+    {
+        "state": "ACTIVATING",
+        "progress": 100,
+        "message": "firmware:dummy"
+    }
+
+The progress message's ``.status`` is ``PROGRESS``, see ``tools/swupdate-progress.c``
+for details on how a progress client can be implemented.
+
+**Note:** The activation message may be sent multiple times if the update activation
+is pending, namely on each wfx poll operation and if a new update job is enqueued
+while the current one is not activated.
+
+Because of the (predefined) ``firmware`` label present, the progress client should
+initiate or schedule a reboot of the device in order to test-boot the new firmware.
+Also because of the ``firmware`` label present, the wfx Lua Suricatta module records
+the installed update to the bootloader environment. If this label was missing, no such
+recording would've been made which is suitable for, e.g., configuration or
+application updates.
+
+In order for the this mechanism to work, SWUpdate must not record the update to the
+bootloader environment after it has installed it or, in case of configuration or
+application updates, must not touch the bootloader environment at all (see the
+Sections `Update Transaction and Status Marker` and `bootloader` in
+:doc:`sw-description`).
+
+Hence, for firmware updates requiring a test-boot into the new firmware, the
+following properties should be set in the ``.swu`` file's ``sw-description``:
+
+.. code::
+
+    software =
+    {
+        bootloader_transaction_marker = true;
+        bootloader_state_marker = false;
+        ...
+
+For configuration or application updates, the following properties apply:
+
+.. code::
+
+    software =
+    {
+        bootloader_transaction_marker = false;
+        bootloader_state_marker = false;
+        ...
 
 
 Support for general purpose HTTP server
@@ -384,8 +575,8 @@ defaulting to ``ustate``. In addition, it captures the ``update_state_t`` enum v
 
 The function ``suricatta.pstate.save(state)`` requires one of ``suricatta.pstate``'s
 "enum" values as parameter and returns ``true``, or, in case of error, ``nil``.
-The function ``suricatta.pstate.get()`` returns ``true``, or, in case of error, ``nil``,
-plus one of ``suricatta.pstate``'s "enum" values in the former case.
+The function ``suricatta.pstate.get()`` returns one of ``suricatta.pstate``'s
+"enum" values or, in case of error, ``STATE_ERROR``.
 
 
 `suricatta.server`
@@ -487,3 +678,44 @@ the response body.
 More examples of how to use a channel can be found in the example suricatta Lua
 module ``examples/suricatta/swupdate_suricatta.lua``.
 
+`suricatta.bootloader`
+......................
+
+The ``suricatta.bootloader`` table exposes SWUpdate's bootloader environment
+modification functions to suricatta Lua modules.
+
+The enum-like table ``suricatta.bootloader.bootloaders`` holds the bootloaders
+SWUpdate supports, i.e.
+
+   .. code-block:: lua
+
+    suricatta.bootloader.bootloaders = {
+        EBG   = "ebg",
+        NONE  = "none",
+        GRUB  = "grub",
+        UBOOT = "uboot",
+    },
+
+
+The function ``suricatta.bootloader.get()`` returns the currently selected
+bootloader in terms of a ``suricatta.bootloader.bootloaders`` field value.
+
+The function ``suricatta.bootloader.is(name)`` takes one of
+``suricatta.bootloader.bootloaders``'s field values as ``name`` and returns
+``true`` if it is the currently selected bootloader, ``false`` otherwise.
+
+The functions in the ``suricatta.bootloader.env`` table interact with the
+currently selected bootloader's environment:
+
+The function ``suricatta.bootloader.env.get(variable)`` retrieves the value
+associated to ``variable`` from the bootloader's environment.
+
+The function ``suricatta.bootloader.env.set(variable, value)`` sets the
+bootloader environment's key ``variable`` to ``value``.
+
+The function ``suricatta.bootloader.env.unset(variable)`` deletes the bootloader
+environment's key ``variable``.
+
+The function ``suricatta.bootloader.env.apply(filename)`` applies
+all key=value lines of a local file ``filename`` to the currently selected
+bootloader's environment.

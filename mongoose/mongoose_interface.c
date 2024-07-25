@@ -3,13 +3,14 @@
  * Stefan Herbrechtsmeier <stefan.herbrechtsmeier@weidmueller.com>
  *
  * (C) Copyright 2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * Copyright (c) 2004-2013 Sergey Lyubka
  *
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
+#include "swupdate_status.h"
 #define _XOPEN_SOURCE 600  // For PATH_MAX on linux
 
 #include <stddef.h>
@@ -17,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <inttypes.h>
 #include <stdbool.h>
 
 #include <getopt.h>
@@ -33,6 +35,10 @@
 #include "mongoose_multipart.h"
 #include "util.h"
 
+#ifndef MG_TLS
+#define MG_TLS 0
+#endif
+
 #define MG_PORT "8080"
 #define MG_ROOT "."
 
@@ -42,7 +48,7 @@ struct mongoose_options {
 	char *port;
 	char *global_auth_file;
 	char *auth_domain;
-#if MG_ENABLE_SSL
+#if MG_TLS
 	char *ssl_cert;
 	char *ssl_key;
 #endif
@@ -58,17 +64,20 @@ struct file_upload_state {
 	uint64_t last_io_time;
 };
 
+struct parent_connection_info {
+	struct mg_mgr *mgr;
+	unsigned long conn_id;
+};
+
 static bool run_postupdate;
 static unsigned int watchdog_conn = 0;
 static struct mg_http_serve_opts s_http_server_opts;
 const char *global_auth_domain;
 const char *global_auth_file;
-#if MG_ENABLE_SSL
+#if MG_TLS
 static bool ssl;
 static struct mg_tls_opts tls_opts;
 #endif
-
-static int ws_pipe;
 
 static int s_signo = 0;
 static void signal_handler(int signo) {
@@ -174,7 +183,7 @@ static void cs_md5(char buf[33], ...)
 	va_end(ap);
 
 	mg_hash_md5_v(num_msgs, msgs, msg_lens, hash);
-	mg_hex(hash, sizeof(hash), buf);
+	mg_snprintf(buf, 33, "%M", mg_print_hex, sizeof(hash), hash);
 }
 
 static void mg_mkmd5resp(struct mg_str method, struct mg_str uri, struct mg_str ha1,
@@ -184,9 +193,9 @@ static void mg_mkmd5resp(struct mg_str method, struct mg_str uri, struct mg_str 
 	static const char colon[] = ":";
 	static const size_t one = 1;
 	char ha2[33];
-	cs_md5(ha2, method.ptr, method.len, colon, one, uri.ptr, uri.len, NULL);
-	cs_md5(resp, ha1.ptr, ha1.len, colon, one, nonce.ptr, nonce.len, colon, one, nc.ptr,
-		   nc.len, colon, one, cnonce.ptr, cnonce.len, colon, one, qop.ptr, qop.len,
+	cs_md5(ha2, method.buf, method.len, colon, one, uri.buf, uri.len, NULL);
+	cs_md5(resp, ha1.buf, ha1.len, colon, one, nonce.buf, nonce.len, colon, one, nc.buf,
+		   nc.len, colon, one, cnonce.buf, cnonce.len, colon, one, qop.buf, qop.len,
 		   colon, one, ha2, sizeof(ha2) - 1, NULL);
 }
 
@@ -206,7 +215,7 @@ static double mg_time(void)
 static int mg_check_nonce(struct mg_str nonce)
 {
 	unsigned long now = (unsigned long) mg_time();
-	unsigned long val = (unsigned long) strtoul(nonce.ptr, NULL, 16);
+	unsigned long val = (unsigned long) strtoul(nonce.buf, NULL, 16);
 	return (now >= val) && (now - val < 60 * 60);
 }
 
@@ -226,11 +235,11 @@ static int mg_check_digest_auth(struct mg_str method, struct mg_str uri,
 	 */
 	while (fgets(buf, sizeof(buf), fp) != NULL) {
 		if (sscanf(buf, "%[^:]:%[^:]:%s", f_user, f_domain, f_ha1) == 3 &&
-			mg_vcmp(&username, f_user) == 0 &&
-			mg_vcmp(&auth_domain, f_domain) == 0) {
+			mg_strcmp(username, mg_str(f_user)) == 0 &&
+			mg_strcmp(auth_domain, mg_str(f_domain)) == 0) {
 			/* Username and domain matched, check the password */
 			mg_mkmd5resp(method, uri, mg_str_s(f_ha1), nonce, nc, cnonce, qop, exp_resp);
-			return mg_ncasecmp(response.ptr, exp_resp, strlen(exp_resp)) == 0;
+			return strncmp(response.buf, exp_resp, strlen(exp_resp)) == 0;
 		}
 	}
 
@@ -262,7 +271,7 @@ static int mg_http_check_digest_auth(struct mg_http_message *hm, struct mg_str a
 	return mg_check_digest_auth(
 			hm->method,
 			mg_str_n(
-					hm->uri.ptr,
+					hm->uri.buf,
 					hm->uri.len + (hm->query.len ? hm->query.len + 1 : 0)),
 			username, cnonce, response, qop, nc, nonce, auth_domain, fp);
 }
@@ -338,7 +347,7 @@ static void restart_handler(struct mg_connection *nc, void *ev_data)
 	struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 	ipc_message msg = {};
 
-	if(mg_vcasecmp(&hm->method, "POST") != 0) {
+	if(mg_strcasecmp(hm->method, mg_str("POST")) != 0) {
 		mg_http_reply(nc, 405, "", "%s", "Method Not Allowed\n");
 		return;
 	}
@@ -350,19 +359,6 @@ static void restart_handler(struct mg_connection *nc, void *ev_data)
 	}
 
 	mg_http_reply(nc, 201, "", "%s", "Device will reboot now.\n");
-}
-
-static void broadcast_callback(struct mg_connection *nc, int ev,
-		void __attribute__ ((__unused__)) *ev_data, void __attribute__ ((__unused__)) *fn_data)
-{
-	if (ev == MG_EV_READ) {
-		struct mg_connection *t;
-		for (t = nc->mgr->conns; t != NULL; t = t->next) {
-			if (t->label[0] != 'W') continue;
-			mg_ws_send(t,(char *)nc->recv.buf, nc->recv.len, WEBSOCKET_OP_TEXT);
-		}
-		mg_iobuf_del(&nc->recv, 0, nc->recv.len);
-	}
 }
 
 static int level_to_rfc_5424(int level)
@@ -381,14 +377,18 @@ static int level_to_rfc_5424(int level)
 	}
 }
 
-static void broadcast(char *str)
+static void broadcast(struct parent_connection_info *p, char *str)
 {
-	send(ws_pipe, str, strlen(str), 0);
+	mg_wakeup(p->mgr, p->conn_id, str, strlen(str));
 }
 
-static void *broadcast_message_thread(void __attribute__ ((__unused__)) *data)
+static void *broadcast_message_thread(void *data)
 {
 	int fd = -1;
+	struct parent_connection_info *p = (struct parent_connection_info *) data;
+
+	if(!p)
+		return NULL;
 
 	for (;;) {
 		ipc_message msg;
@@ -406,7 +406,7 @@ static void *broadcast_message_thread(void __attribute__ ((__unused__)) *data)
 
 		ret = ipc_notify_receive(&fd, &msg);
 		if (ret != sizeof(msg))
-			return NULL;
+			break;
 
 		if (strlen(msg.data.notify.msg) != 0 &&
 				msg.data.status.current != PROGRESS) {
@@ -424,18 +424,24 @@ static void *broadcast_message_thread(void __attribute__ ((__unused__)) *data)
 					 level_to_rfc_5424(msg.data.notify.level), /* RFC 5424 */
 					 text);
 
-			broadcast(str);
+			broadcast(p, str);
 		}
 	}
+	free(p);
+	return NULL;
 }
 
-static void *broadcast_progress_thread(void __attribute__ ((__unused__)) *data)
+static void *broadcast_progress_thread(void *data)
 {
 	RECOVERY_STATUS status = -1;
 	sourcetype source = -1;
 	unsigned int step = 0;
 	uint8_t percent = 0;
 	int fd = -1;
+	struct parent_connection_info *p = (struct parent_connection_info *) data;
+
+	if(!p)
+		return NULL;
 
 	for (;;) {
 		struct progress_msg msg;
@@ -455,7 +461,7 @@ static void *broadcast_progress_thread(void __attribute__ ((__unused__)) *data)
 
 		ret = progress_ipc_receive(&fd, &msg);
 		if (ret != sizeof(msg))
-			return NULL;
+			break;
 
 		if (msg.status != PROGRESS &&
 		    (msg.status != status || msg.status == FAILURE)) {
@@ -469,7 +475,7 @@ static void *broadcast_progress_thread(void __attribute__ ((__unused__)) *data)
 				"\t\"status\": \"%s\"\r\n"
 				"}\r\n",
 				escaped);
-			broadcast(str);
+			broadcast(p, str);
 		}
 
 		if (msg.source != source) {
@@ -481,7 +487,7 @@ static void *broadcast_progress_thread(void __attribute__ ((__unused__)) *data)
 				"\t\"source\": \"%s\"\r\n"
 				"}\r\n",
 				get_source_string(msg.source));
-			broadcast(str);
+			broadcast(p, str);
 		}
 
 		if (msg.status == SUCCESS && msg.source == SOURCE_WEBSERVER && run_postupdate) {
@@ -499,7 +505,7 @@ static void *broadcast_progress_thread(void __attribute__ ((__unused__)) *data)
 				"\t\"source\": \"%s\"\r\n"
 				"}\r\n",
 				escaped);
-			broadcast(str);
+			broadcast(p, str);
 		}
 
 		if ((msg.cur_step != step || msg.cur_percent != percent) &&
@@ -521,9 +527,11 @@ static void *broadcast_progress_thread(void __attribute__ ((__unused__)) *data)
 				msg.cur_step,
 				escaped,
 				msg.cur_percent);
-			broadcast(str);
+			broadcast(p, str);
 		}
 	}
+	free(p);
+	return NULL;
 }
 
 static void timer_ev_handler(void *fn_data)
@@ -535,7 +543,7 @@ static void timer_ev_handler(void *fn_data)
 	if (fus && (watchdog_conn > 0) &&
 		(mg_millis() - fus->last_io_time > (watchdog_conn * 1000))) {
 		/* Connection lost, drop data */
-		ERROR("Connection lost, no data for %ld seconds, closing...",
+		ERROR("Connection lost, no data for %" PRId64 " seconds, closing...",
 			  (mg_millis() - fus->last_io_time) / 1000);
 		mg_http_reply(fus->c, 408, "", "%s", "Request Timeout\n");
 		fus->c->is_draining = 1;
@@ -546,8 +554,7 @@ static void timer_ev_handler(void *fn_data)
 /*
  * Code common to V1 and V2
  */
-static void upload_handler(struct mg_connection *nc, int ev, void *ev_data,
-		void __attribute__ ((__unused__)) *fn_data)
+static void upload_handler(struct mg_connection *nc, int ev, void *ev_data)
 {
 	struct mg_http_multipart *mp;
 	struct file_upload_state *fus;
@@ -569,7 +576,7 @@ static void upload_handler(struct mg_connection *nc, int ev, void *ev_data,
 			struct swupdate_request req;
 			swupdate_prepare_req(&req);
 			req.len = mp->len;
-			strncpy(req.info, mp->part.filename.ptr, sizeof(req.info) - 1);
+			strncpy(req.info, mp->part.filename.buf, sizeof(req.info) - 1);
 			req.source = SOURCE_WEBSERVER;
 			fus->fd = ipc_inst_start_ext(&req, sizeof(req));
 			if (fus->fd < 0) {
@@ -604,7 +611,7 @@ static void upload_handler(struct mg_connection *nc, int ev, void *ev_data,
 			if (!fus)
 				break;
 
-			written = write(fus->fd, (char *) mp->part.body.ptr, mp->part.body.len);
+			written = write(fus->fd, (char *) mp->part.body.buf, mp->part.body.len);
 			/*
 			 * IPC seems to block, wait for a while
 			 */
@@ -666,26 +673,38 @@ static void websocket_handler(struct mg_connection *nc, void *ev_data)
 {
 	struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 	mg_ws_upgrade(nc, hm, NULL);
-	nc->label[0] = 'W';
+	nc->data[0] = 'W'; // Set unique Websocket marker
 }
 
-static void ev_handler(struct mg_connection *nc, int ev, void *ev_data, void *fn_data)
+static void ev_handler(struct mg_connection *nc, int ev, void *ev_data)
 {
-	if (nc->label[0] != 'M' && ev == MG_EV_HTTP_MSG) {
+	static uint64_t last_io_time = 0;
+	if (ev == MG_EV_OPEN && nc->is_listening) {
+		struct parent_connection_info *data = calloc(2, sizeof(struct parent_connection_info));
+		if (!data) {
+			ERROR("Error: Memory allocation failed for parent_connection_info");
+			return;
+		}
+		data[0].mgr = nc->mgr;
+		data[0].conn_id = nc->id;
+		memcpy(&data[1], &data[0], sizeof(struct parent_connection_info));
+		start_thread(broadcast_message_thread, &data[0]);
+		start_thread(broadcast_progress_thread, &data[1]);
+	} else if (nc->data[0] != 'M' && nc->data[0] != 'W' && ev == MG_EV_HTTP_MSG) {
 		struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 		if (!mg_http_is_authorized(hm, global_auth_domain, global_auth_file))
 			mg_http_send_digest_auth_request(nc, global_auth_domain);
 		else if (mg_http_get_header(hm, "Sec-WebSocket-Key") != NULL)
 			websocket_handler(nc, ev_data);
-		else if (mg_http_match_uri(hm, "/restart"))
+		else if (mg_match(hm->uri, mg_str("/restart"), NULL))
 			restart_handler(nc, ev_data);
 		else
 			mg_http_serve_dir(nc, ev_data, &s_http_server_opts);
-	} else if (nc->label[0] != 'M' && ev == MG_EV_READ) {
+	} else if (nc->data[0] != 'M' && nc->data[0] != 'W' && ev == MG_EV_READ) {
 		struct mg_http_message hm;
 		int hlen = mg_http_parse((char *) nc->recv.buf, nc->recv.len, &hm);
 		if (hlen > 0) {
-			if (mg_http_match_uri(&hm, "/upload")) {
+			if (mg_match(hm.uri, mg_str("/upload"), NULL)) {
 				if (!mg_http_is_authorized(&hm, global_auth_domain, global_auth_file)) {
 					if (nc->pfn != NULL)
 						mg_http_send_digest_auth_request(nc, global_auth_domain);
@@ -694,17 +713,17 @@ static void ev_handler(struct mg_connection *nc, int ev, void *ev_data, void *fn
 				} else {
 					nc->pfn = upload_handler;
 					nc->pfn_data = NULL;
-					multipart_upload_handler(nc, MG_EV_HTTP_CHUNK, &hm, NULL);
+					multipart_upload_handler(nc, ev, &hm);
 				}
 			}
 		}
-	} else if (nc->label[0] == 'M' && (ev == MG_EV_READ || ev == MG_EV_POLL || ev == MG_EV_CLOSE)) {
+	} else if (nc->data[0] == 'M' && (ev == MG_EV_READ || ev == MG_EV_POLL || ev == MG_EV_CLOSE)) {
 		if (nc->recv.len >= MG_MAX_RECV_SIZE && ev == MG_EV_READ)
 			nc->is_full = true;
-		multipart_upload_handler(nc, ev, ev_data, fn_data);
+		multipart_upload_handler(nc, ev, ev_data);
 		if (nc->recv.len < MG_MAX_RECV_SIZE && ev == MG_EV_POLL)
 			nc->is_full = false;
-#if MG_ENABLE_SSL
+#if MG_TLS
 	} else if (ev == MG_EV_ACCEPT && ssl) {
 		mg_tls_init(nc, &tls_opts);
 #endif
@@ -712,6 +731,27 @@ static void ev_handler(struct mg_connection *nc, int ev, void *ev_data, void *fn
 		ERROR("%p %s", nc->fd, (char *) ev_data);
 	} else if (ev == MG_EV_WS_MSG) {
 		mg_iobuf_del(&nc->recv, 0, nc->recv.len);
+	} else if (ev == MG_EV_WAKEUP) {
+		// forward broadcast messages
+		struct mg_str *data = (struct mg_str *) ev_data;
+		struct mg_connection *t;
+		for (t = nc->mgr->conns; t != NULL; t = t->next) {
+			if (t->data[0] == 'W') {
+				mg_ws_send(t, data->buf, data->len, WEBSOCKET_OP_TEXT);
+			}
+		}
+		last_io_time = mg_millis();
+	} else if (ev == MG_EV_POLL) {
+		// websocket heartbeat every 20s
+		struct mg_connection *t;
+		uint64_t now = *((uint64_t *)ev_data);
+		if (now < last_io_time + 20000) return;
+		for (t = nc->mgr->conns; t != NULL; t = t->next) {
+			if (t->data[0] == 'W') {
+				mg_ws_send(t, "", 0, WEBSOCKET_OP_PING);
+			}
+		}
+		last_io_time = now;
 	}
 }
 
@@ -725,14 +765,14 @@ static int mongoose_settings(void *elem, void  __attribute__ ((__unused__)) *dat
 		opts->root = strdup(tmp);
 	}
 
-	get_field(LIBCFG_PARSER, elem, "enable_directory_listing",
+	GET_FIELD_BOOL(LIBCFG_PARSER, elem, "enable_directory_listing",
 		  &opts->listing);
 
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "listening_ports", tmp);
 	if (strlen(tmp)) {
 		opts->port = strdup(tmp);
 	}
-#if MG_ENABLE_SSL
+#if MG_TLS
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "ssl_certificate", tmp);
 	if (strlen(tmp)) {
 		opts->ssl_cert = strdup(tmp);
@@ -752,9 +792,9 @@ static int mongoose_settings(void *elem, void  __attribute__ ((__unused__)) *dat
 	if (strlen(tmp)) {
 		opts->auth_domain = strdup(tmp);
 	}
-	get_field(LIBCFG_PARSER, elem, "run-postupdate", &run_postupdate);
+	GET_FIELD_BOOL(LIBCFG_PARSER, elem, "run-postupdate", &run_postupdate);
 
-	get_field(LIBCFG_PARSER, elem, "timeout", &watchdog_conn);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "timeout", (int *)&watchdog_conn);
 
 	return 0;
 }
@@ -763,7 +803,7 @@ static int mongoose_settings(void *elem, void  __attribute__ ((__unused__)) *dat
 static struct option long_options[] = {
 	{"listing", no_argument, NULL, 'l'},
 	{"port", required_argument, NULL, 'p'},
-#if MG_ENABLE_SSL
+#if MG_TLS
 	{"ssl", no_argument, NULL, 's'},
 	{"ssl-cert", required_argument, NULL, 'C'},
 	{"ssl-key", required_argument, NULL, 'K'},
@@ -782,7 +822,7 @@ void mongoose_print_help(void)
 		"\tmongoose arguments:\n"
 		"\t  -l, --listing                  : enable directory listing\n"
 		"\t  -p, --port <port>              : server port number  (default: %s)\n"
-#if MG_ENABLE_SSL
+#if MG_TLS
 		"\t  -s, --ssl                      : enable ssl support\n"
 		"\t  -C, --ssl-cert <cert>          : ssl certificate to present to clients\n"
 		"\t  -K, --ssl-key <key>            : key corresponding to the ssl certificate\n"
@@ -800,10 +840,9 @@ int start_mongoose(const char *cfgfname, int argc, char *argv[])
 	struct mg_mgr mgr;
 	struct mg_connection *nc;
 	char *url = NULL;
-	char buf[50];
 	int choice;
 
-#if MG_ENABLE_SSL
+#if MG_TLS
 	ssl = false;
 #endif
 
@@ -853,7 +892,7 @@ int start_mongoose(const char *cfgfname, int argc, char *argv[])
 		case 't':
 			watchdog_conn = strtoul(optarg, NULL, 10);
 			break;
-#if MG_ENABLE_SSL
+#if MG_TLS
 		case 's':
 			ssl = true;
 			break;
@@ -883,18 +922,16 @@ int start_mongoose(const char *cfgfname, int argc, char *argv[])
 	global_auth_file = opts.global_auth_file;
 	global_auth_domain = opts.auth_domain;
 
-#if MG_ENABLE_SSL
+#if MG_TLS
 	if (ssl) {
-		tls_opts.cert = opts.ssl_cert;
-		tls_opts.certkey = opts.ssl_key;
+		tls_opts.cert = mg_file_read(&mg_fs_posix, opts.ssl_cert);
+		tls_opts.key = mg_file_read(&mg_fs_posix, opts.ssl_key);
 	}
 #endif
 
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
 	mg_mgr_init(&mgr);
-
-	ws_pipe = mg_mkpipe(&mgr, broadcast_callback, NULL, true);
 
 	/* Parse url with port only fallback */
 	if (opts.port) {
@@ -920,12 +957,10 @@ int start_mongoose(const char *cfgfname, int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	start_thread(broadcast_message_thread, NULL);
-	start_thread(broadcast_progress_thread, NULL);
+	mg_wakeup_init(&mgr);
 
-	INFO("Mongoose web server version %s with pid %d started on [%s] with web root [%s]",
-		MG_VERSION, getpid(), mg_straddr(&nc->loc, buf, sizeof(buf)),
-		s_http_server_opts.root_dir);
+	INFO("Mongoose web server v%s with PID %d listening on %s and serving %s",
+		MG_VERSION, getpid(), url, s_http_server_opts.root_dir);
 
 	while (s_signo == 0)
 		mg_mgr_poll(&mgr, 100);

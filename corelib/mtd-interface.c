@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2014
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -217,6 +217,20 @@ int get_mtd_from_name(const char *s)
 	return -1;
 }
 
+long long get_mtd_size(int mtdnum)
+{
+	struct flash_description *flash = get_flash_info();
+	struct mtd_dev_info dev_info;
+
+	int err = mtd_get_dev_info1(flash->libmtd, mtdnum, &dev_info);
+	if (err != 0) {
+		ERROR("Could not get MTD %d info: %d, %d", mtdnum, err, errno);
+		return -ENODEV;
+	}
+
+	return dev_info.size;
+}
+
 void ubi_init(void)
 {
 	struct flash_description *nand = get_flash_info();
@@ -365,6 +379,9 @@ static void scan_ubi_partitions(int mtd)
 	do {
 		err = ubi_attach(libubi, DEFAULT_CTRL_DEV, &mtd_info->req);
 		if (err) {
+			/* Handle race condition where MTD was already being attached. */
+			if (errno == EEXIST && !mtd_num2ubi_dev(libubi, mtd, &mtd_info->req.dev_num))
+				break;
 			if (mtd_info->has_ubi && !tryattach) {
 				TRACE("cannot attach mtd%d ..try erasing", mtd);
 				if (flash_erase(mtd)) {

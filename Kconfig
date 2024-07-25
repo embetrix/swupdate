@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2013 Stefano Babic <sbabic@denx.de>
+# SPDX-FileCopyrightText: 2013 Stefano Babic <stefano.babic@swupdate.org>
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -53,9 +53,25 @@ config HAVE_LIBUBI
 	bool
 	option env="HAVE_LIBUBI"
 
+config HAVE_LIBUBOOTENV
+	bool
+	option env="HAVE_LIBUBOOTENV"
+
+config HAVE_LIBEBGENV
+       bool
+       option env="HAVE_LIBEBGENV"
+
+config HAVE_LIBTEGRABOOT_TOOLS
+       bool
+       option env="HAVE_LIBTEGRABOOT_TOOLS"
+
 config HAVE_LIBEXT2FS
 	bool
 	option env="HAVE_LIBEXT2FS"
+
+config HAVE_LIBBTRFS
+	bool
+	option env="HAVE_LIBBTRFS"
 
 config HAVE_LIBZEROMQ
 	bool
@@ -92,10 +108,6 @@ config HAVE_MBEDTLS
 config HAVE_P11KIT
 	bool
 	option env="HAVE_P11KIT"
-
-config HAVE_JSON_C
-	bool
-	option env="HAVE_JSON_C"
 
 config HAVE_LIBWEBSOCKETS
 	bool
@@ -185,18 +197,18 @@ config SW_VERSIONS_FILE
 	help
 	  This is an optional file that is scanned at the
 	  beginning to read the installed versions of
-	  all sw-components. Each entry in the file is a
+	  all sw-components. Each entry in the file is
 	  a pair of "name version".
 	  In sw-description,  an image can have the
 	  optional attributes:
 		"name" : key for searching in SW_VERSIONS_FILE
 		"version" : version contained in the .swu
-		"install-if-different" : if set, version
-	  		is compared with the one in SW_VERSIONS_FILE.
+		"install-if-different" : if set, the version
+			is compared with the one in SW_VERSIONS_FILE.
 	  The image is installed only if there is a version mismatch.
-	  This lets reduce risks in case of components that are not
-	  safe to be updated, such as the bootloader. Updating it is a risk,
-	  but in some cases it can be required to do it. Having a check,
+	  This reduces the risk in case of components that are not
+	  safe to update, such as the bootloader. Updating it is a risk,
+	  but in some cases it is required to do it. Having a check,
 	  the risky-component is not always updated.
 
 menu "Socket Paths"
@@ -210,14 +222,6 @@ config SOCKET_PROGRESS_PATH
 	string "SWUpdate progress socket path"
 	help
 	  Path to the socket progress information is sent to.
-
-config SOCKET_NOTIFIER_DIRECTORY
-	string "SWUpdate notifier socket directory"
-	depends on HAVE_FREEBSD
-	default "/tmp/"
-	help
-	  Path to SWUpdate's Notifier sockets on FreeBSD as
-	  Linux-like abstract sockets are not available.
 
 endmenu
 
@@ -365,6 +369,7 @@ config DOWNLOAD
 	default n
 	depends on HAVE_LIBCURL
 	select CHANNEL_CURL
+	select JSON
 	help
 	  Enable update from image URL using libcurl. The stream is sent via IPC
 	  to the installer as it is done for other interfaces.
@@ -407,11 +412,12 @@ choice
 	config SSL_IMPL_WOLFSSL
 		bool "wolfSSL (with OpenSSL compatibility layer)"
 		depends on HAVE_WOLFSSL
+		select CMS_IGNORE_CERTIFICATE_PURPOSE if SIGALG_CMS
+		select CMS_SKIP_UNKNOWN_SIGNERS if SIGALG_CMS
 
 	config SSL_IMPL_MBEDTLS
 		bool "mbedTLS"
 		depends on HAVE_MBEDTLS
-
 endchoice
 
 
@@ -443,7 +449,10 @@ choice
 	default SIGALG_RAWRSA
 	help
 	  Select if the signature algorithm for signed images is a raw RSA signature
-	  (following PKCS#1.5) or if it uses Cryptographic Message Syntax (CMS).
+	  (following PKCS#1.5) or if it uses Cryptographic Message Syntax (CMS) with
+	  OpenSSL/LibreSSL or PKCS#7 with wolfSSL.
+	  wolfSSL's PKCS#7 implementation can only deal with one signature and cannot
+	  deal with X509 purposes.
 
 	config SIGALG_RAWRSA
 		bool "RSA PKCS#1.5"
@@ -452,12 +461,14 @@ choice
 		bool "RSA PSS"
 
 	config SIGALG_CMS
-		bool "Cryptographic Message Syntax (CMS)"
-		depends on SSL_IMPL_OPENSSL
+		bool "Cryptographic Message Syntax (CMS) / PKCS#7"
+		depends on SSL_IMPL_OPENSSL || SSL_IMPL_WOLFSSL
 
+	config SIGALG_GPG
+		bool "GPG signing"
 endchoice
 
-menu "CMS signature verification options"
+menu "CMS / PKCS#7 signature verification options"
 	depends on SIGALG_CMS
 
 config CMS_IGNORE_EXPIRED_CERTIFICATE
@@ -488,6 +499,20 @@ config ENCRYPTED_SW_DESCRIPTION
 	  if this is set. It is a compile time option, and mix of plain and
 	  encrypted sw-descriptions is not possible.
 
+config ENCRYPTED_IMAGES_HARDEN_LOGGING
+	bool "Harden logging for encrypted images"
+	default n
+	depends on ENCRYPTED_IMAGES
+	help
+	  This option addresses a theoretical weakness of the AES-CBC encryption in
+	  combination with streamed images. An adversary can target each 16-byte
+	  block of encrypted data within an image and decrypt it, if they can apply a
+	  huge amount of manipulated firmware updates and observe the logged
+	  messages. On average, 2048 update attempts are needed for each block.
+	  Select if this scenario poses a risk. If set, log messages related to a
+	  hash mismatch and errors in the decryption finalization (padding) of a
+	  streamed image are suppressed.
+
 config PKCS11
 	bool "Enable PKCS#11 cryptographic operations"
 	default n
@@ -513,3 +538,6 @@ source parser/Config.in
 
 comment Handlers
 source handlers/Config.in
+
+comment Containers
+source containers/Config.in

@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2022
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -13,6 +13,7 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <unistd.h>
 #include "chained_handler.h"
 #include "installer.h"
 #include "pctl.h"

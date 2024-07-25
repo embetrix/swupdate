@@ -19,7 +19,7 @@
 #if defined(__FreeBSD__)
 #include <sys/param.h>
 #endif
-#include "swupdate.h"
+#include "swupdate_image.h"
 #include "handler.h"
 #include "util.h"
 
@@ -173,7 +173,7 @@ static inline void rdiff_stats(const char* msg, struct rdiff_t *rdiff_state, rs_
 		case RS_RUNNING: strresult = (char*)"RUNNING"; break;
 		default: break;
 	}
-	TRACE("%s avail_in=%ld avail_out=%ld result=%s",
+	TRACE("%s avail_in=%zu avail_out=%zu result=%s",
 		  msg, buffers->avail_in, buffers->avail_out, strresult);
 }
 
@@ -337,18 +337,7 @@ static int apply_rdiff_patch(struct img_type *img,
 	rs_trace_to(rdiff_log);
 
 	rdiff_state.job = rs_patch_begin(base_file_read_cb, rdiff_state.base_file);
-	ret = copyfile(img->fdin,
-			&rdiff_state,
-			img->size,
-			(unsigned long *)&img->offset,
-			img->seek,
-			0, /* no skip */
-			img->compressed,
-			&img->checksum,
-			img->sha256,
-			img->is_encrypted,
-			img->ivt_ascii,
-			apply_rdiff_chunk_cb);
+	ret = copyimage(&rdiff_state, img, apply_rdiff_chunk_cb);
 	if (ret != 0) {
 		ERROR("Error %d running rdiff job, aborting.", ret);
 		goto cleanup;

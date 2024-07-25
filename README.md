@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: 2013 Stefano Babic <sbabic@denx.de>
+SPDX-FileCopyrightText: 2013 Stefano Babic <stefano.babic@swupdate.org>
 
 SPDX-License-Identifier: GPL-2.0-only
 -->
@@ -91,9 +91,14 @@ A community support takes place on the SWUpdate's Mailing List:
 
 	swupdate@googlegroups.com
 
-The Mailing List is open without need to be registered.
+Please subscribe to the list to post.
 
 A web-interface is available [here](https://groups.google.com/g/swupdate).
+
+## Open Source Compliance
+
+SWUpdate was analyzed to be Open Source compliant. See [Open Source Compliance](https://github.com/Open-Source-Compliance/package-analysis/tree/main/analysed-packages/swupdate)
+for details.
 
 ## Contributing to the project
 

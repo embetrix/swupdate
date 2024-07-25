@@ -1,12 +1,11 @@
 /*
  * (C) Copyright 2014
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
 
-#ifndef _GLOBALS_H
-#define _GLOBALS_H
+#pragma once
 
 #define BANNER "SWUpdate v" SWU_VER "\n"
 
@@ -22,10 +21,12 @@
 #define MAX_BOOT_SCRIPT_LINE_LENGTH	1024
 #define MAX_SEEK_STRING_SIZE	32
 
+/*
+ * swupdate uses SHA256 hashes
+ */
+#define SHA256_HASH_LENGTH	32
+
 /* These are fixed path to temporary files */
 #define SCRIPTS_DIR_SUFFIX	"scripts/"
 #define DATADST_DIR_SUFFIX	"datadst/"
 #define BOOT_SCRIPT_SUFFIX	"boot-script"
-
-#endif
-

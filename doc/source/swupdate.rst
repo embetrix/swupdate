@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 =============================================
@@ -538,6 +538,8 @@ Command line parameters
 +-------------+----------+--------------------------------------------+
 | -o <file>   | string   | Save the stream (SWU) to a file.           |
 +-------------+----------+--------------------------------------------+
+| -s <file>   | string   | Save installed version info to a file.     |
++-------------+----------+--------------------------------------------+
 | -v          |    -     | Activate verbose output.                   |
 +-------------+----------+--------------------------------------------+
 | -M          |    -     | Disable setting the bootloader transaction |
@@ -573,6 +575,11 @@ Command line parameters
 +-------------+----------+--------------------------------------------+
 | -p <cmd>    | string   | Execute post-update command.               |
 +-------------+----------+--------------------------------------------+
+| -q <sel>    | string   | List for software images set and source    |
+|             |          |             that are accepted via IPC      |
+|             |          |             Ex.: stable,main               |
+|             |          |             it can be set multiple times   |
++-------------+----------+--------------------------------------------+
 
 Downloader command line parameters
 ..................................
@@ -581,22 +588,33 @@ Example: ``swupdate -d "-u example.com"``
 
 Mandatory arguments are marked with '\*':
 
-+-------------+----------+--------------------------------------------+
-|  Parameter  | Type     | Description                                |
-+=============+==========+============================================+
-| -u <url>    | string   | \* This is the URL where new software is   |
-|             |          | pulled. URL is a link to a valid .swu image|
-+-------------+----------+--------------------------------------------+
-| -r <retries>| integer  | Number of retries before a download is     |
-|             |          | considered broken. With "-r 0", SWUpdate   |
-|             |          | will not stop until a valid software is    |
-|             |          | loaded.                                    |
-+-------------+----------+--------------------------------------------+
-| -t <timeout>| integer  | Timeout for connection lost                |
-|             |          | downloader or Webserver                    |
-+-------------+----------+--------------------------------------------+
-| -a <usr:pwd>| string   | Send user and password for Basic Auth      |
-+-------------+----------+--------------------------------------------+
++----------------+----------+--------------------------------------------+
+|  Parameter     | Type     | Description                                |
++================+==========+============================================+
+| -u <url>       | string   | \* This is the URL where new software is   |
+|                |          | pulled. URL is a link to a valid .swu image|
++----------------+----------+--------------------------------------------+
+| -r <retries>   | integer  | Number of retries before a download is     |
+|                |          | considered broken. With "-r 0", SWUpdate   |
+|                |          | will not stop until a valid software is    |
+|                |          | loaded.                                    |
++----------------+----------+--------------------------------------------+
+| -w <retrywait> | integer  | Time to wait prior to retry and resume a   |
+|                |          | download (default: 5s).                    |
++----------------+----------+--------------------------------------------+
+| -t <timeout>   | integer  | Timeout for connection lost                |
+|                |          | downloader or Webserver                    |
++----------------+----------+--------------------------------------------+
+| -a <usr:pwd>   | string   | Send user and password for Basic Auth      |
++----------------+----------+--------------------------------------------+
+| -n <value>     | string   | Maximum download speed to be used.         |
+|                |          | Value be specified in kB/s, B/s, MB/s      |
+|                |          | or GB/s. Examples:                         |
+|                |          | -n 100k : Set limit to 100 kB/s.           |
+|                |          | -n 500  : Set limit to 500 B/s.            |
+|                |          | -n 2M   : Set limit to 1 M/s.              |
+|                |          | -n 1G   : Set limit to 1 G/s.              |
++----------------+----------+--------------------------------------------+
 
 Suricatta command line parameters
 .................................
@@ -737,6 +755,8 @@ may look like the following starting SWUpdate in suricatta daemon mode:
 
 	[Service]
 	Type=notify
+	RuntimeDirectory=swupdate
+	RuntimeDirectoryPreserve=yes
 	ExecStart=/usr/bin/swupdate -u '-t default -u http://localhost -i 25'
 
 	[Install]
@@ -755,23 +775,22 @@ activation, an accompanying systemd socket unit file
 	Documentation=https://sbabic.github.io/swupdate
 
 	[Socket]
-	ListenStream=/tmp/sockinstctrl
-	ListenStream=/tmp/swupdateprog
+	ListenStream=/run/swupdate/sockinstctrl
+	ListenStream=/run/swupdate/swupdateprog
 
 	[Install]
 	WantedBy=sockets.target
 
 On ``swupdate.socket`` being started, systemd creates the socket
 files and hands them over to SWUpdate when it starts. So, for
-example, when talking to ``/tmp/swupdateprog``, systemd starts
-``swupdate.service`` and hands-over the socket files. The socket
-files are also handed over on a "regular" start of SWUpdate via
-``systemctl start swupdate.service``.
+example, when talking to ``/run/swupdate/swupdateprog``, systemd
+starts ``swupdate.service`` and hands-over the socket files. The
+socket files are also handed over on a "regular" start of SWUpdate
+via ``systemctl start swupdate.service``.
 
-Note that the socket paths in the two ``ListenStream=`` directives
-have to match the socket paths ``CONFIG_SOCKET_CTRL_PATH`` and
-``CONFIG_SOCKET_PROGRESS_PATH`` in SWUpdate's configuration.
-Here, the default socket path configuration is depicted.
+Note, that all dependent services need to access the swupdate
+sockets via the paths specified in the ``swupdate.socket`` systemd
+unit.
 
 .. _systemd: https://www.freedesktop.org/wiki/Software/systemd/
 
@@ -809,15 +828,40 @@ risk, we are not modifying original environment block. Variables are written
 into temporary file and after successful operation rename instruction is
 called.
 
+
+Image File Format
+=================
+
+SWUpdate uses cpio as image file format because it is a simple,
+well-established, and streamable format. More specifically, the
+*New ASCII* format (header magic number ``070701``) and the
+*New CRC* format (header magic number ``070702``) are supported.
+Both formats are essentially equivalent with the New CRC format additionally
+having set the cpio header field ``check`` to the least-significant 32 bits of
+the sum of all (unsigned) data bytes. This checksum is verified by SWUpdate.
+If this verification fails, SWUpdate yields an error like the following:
+
+::
+
+	Checksum WRONG ! Computed 0xfa11ed00, it should be 0xffffffff
+
+Note that there's artifact sha256 verification available
+(see ``CONFIG_HASH_VERIFY``) which is recommended over relying
+on cpio's checksum facility.
+
+For both cpio formats, the New ASCII as well as the New CRC format, the
+cpio file size is limited to 32 Bit, i.e., 4 GB.
+
+
 Building a single image
 =======================
 
-cpio is used as container for its simplicity. The resulting image is very
-simple to be built.
-The file describing the images ("sw-description", but the name can be
-configured) must be the first file in the cpio archive.
+cpio is used as container format because of its simplicity and its ability
+to be streamed. The meta information file ``sw-description`` (default, see
+``CONFIG_SETSWDESCRIPTION``) describing the images in the container must be
+the first file in the cpio archive. The images follow it, in any order.
 
-To produce an image, a script like this can be used:
+To produce an image, a script like the following can be used:
 
 ::
 
@@ -829,9 +873,9 @@ To produce an image, a script like this can be used:
 		echo $i;done | cpio -ov -H crc >  ${PRODUCT_NAME}_${CONTAINER_VER}.swu
 
 
-The single images can be put in any order inside the cpio container, with the
-exception of sw-description, that must be the first one.
-To check your generated image you can run the following command:
+Alternatively, swugenerator_ may be used to generate the image.
+
+The generated image can be checked by running the following command:
 
 ::
 
@@ -841,6 +885,11 @@ To check your generated image you can run the following command:
 Support of compound image
 -------------------------
 
-The single image can be built automatically inside Yocto.
-meta-swupdate extends the classes with the swupdate class. A recipe
-should inherit it, and add your own sw-description file to generate the image.
+A single image can be built automatically inside Yocto.
+meta-swupdate_ extends the classes with the ``swupdate`` class. A recipe
+should inherit it and add an own ``sw-description`` file to generate the image.
+
+Alternatively, swugenerator_ may be used to generate compound images outside Yocto.
+
+.. _swugenerator: https://github.com/sbabic/swugenerator/
+.. _meta-swupdate: https://github.com/sbabic/meta-swupdate

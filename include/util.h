@@ -1,23 +1,26 @@
 /*
- * (C) Copyright 2012-2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * (C) Copyright 2012-2023
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
 
-#ifndef _UTIL_H
-#define _UTIL_H
+#pragma once
 
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
+#include <sys/time.h>
 #if defined(__linux__)
 #include <linux/types.h>
 #endif
-#include "swupdate.h"
+#include <sys/types.h>
+#include "globals.h"
 #include "swupdate_status.h"
-#include "swupdate_settings.h"
+#include "swupdate_dict.h"
 #include "compat.h"
 
 #define NOTIFY_BUF_SIZE 	2048
@@ -30,7 +33,12 @@
 #define AES_256_KEY_LEN	32
 
 #define HWID_REGEXP_PREFIX	"#RE:"
-#define SWUPDATE_ALIGN(A,S)    (((A) + (S) - 1) & ~((S) - 1))
+
+#define BOOTVAR_TRANSACTION "recovery_status"
+
+struct img_type;
+struct imglist;
+struct hw_type;
 
 extern int loglevel;
 extern int exit_code;
@@ -47,6 +55,13 @@ typedef enum {
 	SERVER_UPDATE_CANCELED,
 	SERVER_ID_REQUESTED,
 } server_op_res_t;
+
+enum {
+  COMPRESSED_FALSE,
+  COMPRESSED_TRUE,
+  COMPRESSED_ZLIB,
+  COMPRESSED_ZSTD,
+};
 
 /*
  * loglevel is used into TRACE / ERROR
@@ -83,6 +98,8 @@ typedef void (*notifier) (RECOVERY_STATUS status, int error, int level, const ch
 void notify(RECOVERY_STATUS status, int error, int level, const char *msg);
 void notify_init(void);
 void notifier_set_color(int level, char *col);
+
+#define __FILENAME__ (__builtin_strrchr(__FILE__, '/') ? __builtin_strrchr(__FILE__, '/') + 1 : __FILE__)
 #define swupdate_notify(status, format, level, arg...) do { \
 	if (loglevel >= level) { \
 		char tmpbuf[NOTIFY_BUF_SIZE]; \
@@ -90,7 +107,7 @@ void notifier_set_color(int level, char *col);
 			if (loglevel >= DEBUGLEVEL) \
 				snprintf(tmpbuf, sizeof(tmpbuf), \
 				     	"ERROR %s : %s : %d : " format, \
-					       	__FILE__, \
+						__FILENAME__, \
 					       	__func__, \
 					       	__LINE__, \
 						## arg); \
@@ -134,6 +151,9 @@ void notifier_set_color(int level, char *col);
 } while (0)
 
 
+#define IS_STR_EQUAL(s,s1) (s && s1 && !strcmp(s,s1))
+#define UNUSED __attribute__((__unused__))
+
 #define LG_16 4
 #define FROM_HEX(f) from_ascii (f, sizeof f, LG_16)
 uintmax_t
@@ -142,6 +162,7 @@ int ascii_to_hash(unsigned char *hash, const char *s);
 int ascii_to_bin(unsigned char *dest, size_t dstlen, const char *src);
 void hash_to_ascii(const unsigned char *hash, char *s);
 int IsValidHash(const unsigned char *hash);
+bool is_hex_str(const char *ascii);
 
 #ifndef typeof
 #define typeof __typeof__
@@ -156,6 +177,11 @@ int IsValidHash(const unsigned char *hash);
 		typeof(b) _b = b;\
 		_a < _b ? _a : _b; })
 
+#define min_t(type,x,y) \
+	({ type __x = (x); type __y = (y); __x < __y ? __x: __y; })
+#define max_t(type,x,y) \
+	({ type __x = (x); type __y = (y); __x > __y ? __x: __y; })
+
 char *sdup(const char *str);
 bool strtobool(const char *s);
 
@@ -165,7 +191,6 @@ bool strtobool(const char *s);
 typedef int (*writeimage) (void *out, const void *buf, size_t len);
 
 void *saferealloc(void *ptr, size_t size);
-int openfile(const char *filename);
 int copy_write(void *out, const void *buf, size_t len);
 #if defined(__FreeBSD__)
 int copy_write_padded(void *out, const void *buf, size_t len);
@@ -182,8 +207,6 @@ int copyfile(int fdin, void *out, size_t nbytes, unsigned long *offs,
 int copyimage(void *out, struct img_type *img, writeimage callback);
 int copybuffer(unsigned char *inbuf, void *out, size_t nbytes, int compressed,
 	unsigned char *hash, bool encrypted, const char *imgivt, writeimage callback);
-off_t extract_next_file(int fd, int fdout, off_t start, int compressed,
-			int encrypted, char *ivt, unsigned char *hash);
 int openfileoutput(const char *filename);
 int mkpath(char *dir, mode_t mode);
 int swupdate_file_setnonblock(int fd, bool block);
@@ -198,11 +221,8 @@ char *substring(const char *src, int first, int len);
 char *string_tolower(char *s);
 size_t snescape(char *dst, size_t n, const char *src);
 void freeargs (char **argv);
-int get_hw_revision(struct hw_type *hw);
-void get_sw_versions(swupdate_cfg_handle *handle, struct swupdate_cfg *sw);
 int compare_versions(const char* left_version, const char* right_version);
 int hwid_match(const char* rev, const char* hwrev);
-int check_hw_compatibility(struct swupdate_cfg *cfg);
 int count_elem_list(struct imglist *list);
 unsigned int count_string_array(const char **nodes);
 void free_string_array(char **nodes);
@@ -210,6 +230,11 @@ int read_lines_notify(int fd, char *buf, int buf_size, int *buf_offset,
 		      LOGLEVEL level);
 long long get_output_size(struct img_type *img, bool strict);
 bool img_check_free_space(struct img_type *img, int fd);
+bool check_same_file(int fd1, int fd2);
+
+/* location for libubootenv configuration file */
+const char *get_fwenv_config(void);
+void set_fwenv_config(const char *fname);
 
 /* Decryption key functions */
 int load_decryption_key(char *fname);
@@ -217,10 +242,10 @@ unsigned char *get_aes_key(void);
 char get_aes_keylen(void);
 unsigned char *get_aes_ivt(void);
 int set_aes_key(const char *key, const char *ivt);
-int set_aes_ivt(const char *ivt);
 
 /* Getting global information */
-int get_install_info(sourcetype *source, char *buf, size_t len);
+int get_install_info(char *buf, size_t len);
+sourcetype  get_install_source(void);
 void get_install_swset(char *buf, size_t len);
 void get_install_running_mode(char *buf, size_t len);
 char *get_root_device(void);
@@ -247,4 +272,7 @@ int swupdate_umount(const char *dir);
 
 /* Date / Time utilities */
 char *swupdate_time_iso8601(struct timeval *tv);
-#endif
+
+/* eMMC functions */
+int emmc_write_bootpart(int fd, int bootpart);
+int emmc_get_active_bootpart(int fd);

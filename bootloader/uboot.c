@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2017
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -39,14 +39,20 @@ static struct {
 
 static int bootloader_initialize(struct uboot_ctx **ctx)
 {
-	if (libuboot.initialize(ctx, NULL) < 0) {
-		ERROR("Error: environment not initialized");
-		return -ENODEV;
-	}
-	if (libuboot.read_config(*ctx, CONFIG_UBOOT_FWENV) < 0) {
-		ERROR("Configuration file %s wrong or corrupted", CONFIG_UBOOT_FWENV);
+	int ret;
+	const char *namespace = NULL;
+
+	ret = libuboot_read_config_ext(ctx, get_fwenv_config());
+	if (ret) {
+		ERROR("Cannot initialize environment from %s", get_fwenv_config());
 		return -EINVAL;
 	}
+
+	namespace = libuboot_namespace_from_dt();
+
+	if (namespace)
+		*ctx = libuboot_get_namespace(*ctx, namespace);
+
 	if (libuboot.open(*ctx) < 0) {
 		WARN("Cannot read environment, using default");
 		if (libuboot.load_file(*ctx, CONFIG_UBOOT_DEFAULTENV) < 0) {
@@ -79,7 +85,6 @@ static int do_env_unset(const char *name)
 {
 	return do_env_set(name, NULL);
 }
-
 
 static int do_apply_list(const char *filename)
 {
@@ -121,28 +126,29 @@ static bootloader uboot = {
 	.apply_list = &do_apply_list
 };
 
+/*
+ * libubootenv is not only used as interface to U-Boot.
+ * It is also used to save SWUpdate's persistent variables that
+ * survives after a restart of the device but should not be
+ * considered by the bootloader. That requires libubootenv
+ * is always linked.
+ */
 static bootloader* probe(void)
 {
-	void* handle = dlopen("libubootenv.so.0", RTLD_NOW | RTLD_GLOBAL);
-	if (!handle) {
-		return NULL;
-	}
-
-	(void)dlerror();
-	load_symbol(handle, &libuboot.open, "libuboot_open");
-	load_symbol(handle, &libuboot.close, "libuboot_close");
-	load_symbol(handle, &libuboot.exit, "libuboot_exit");
-	load_symbol(handle, &libuboot.initialize, "libuboot_initialize");
-	load_symbol(handle, &libuboot.get_env, "libuboot_get_env");
-	load_symbol(handle, &libuboot.read_config, "libuboot_read_config");
-	load_symbol(handle, &libuboot.load_file, "libuboot_load_file");
-	load_symbol(handle, &libuboot.set_env, "libuboot_set_env");
-	load_symbol(handle, &libuboot.env_store, "libuboot_env_store");
+	libuboot.open = libuboot_open;
+	libuboot.close = libuboot_close;
+	libuboot.exit = libuboot_exit;
+	libuboot.initialize = libuboot_initialize;
+	libuboot.get_env = libuboot_get_env;
+	libuboot.read_config = libuboot_read_config;
+	libuboot.load_file = libuboot_load_file;
+	libuboot.set_env = libuboot_set_env;
+	libuboot.env_store = libuboot_env_store;
 	return &uboot;
 }
 
 __attribute__((constructor))
 static void uboot_probe(void)
 {
-	(void)register_bootloader("uboot", probe());
+	(void)register_bootloader(BOOTLOADER_UBOOT, probe());
 }

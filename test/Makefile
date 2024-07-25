@@ -38,9 +38,13 @@ targets   += $(addsuffix .o,   $(tests-y))
 ifneq ($(CONFIG_EXTRA_LDFLAGS),)
 EXTRA_LDFLAGS += $($(STRIP) $(subst ",,$(CONFIG_EXTRA_LDFLAGS)))#"))
 endif
+ifneq ($(CONFIG_EMBEDDED_SURICATTA_LUA),)
+EXTRA_LDFLAGS += -Wl,--format=binary -Wl,$(CONFIG_EMBEDDED_SURICATTA_LUA_SOURCE) -Wl,--format=default
+endif
 
-## transfer __mock_*() functions to according linker flags via rudimentary regex awk parsing
-LDMOCKS = `/usr/bin/gawk '/^[^(extern)|(static)]*([\*_[:alnum:]]+[[:blank:]]+)+[\*]*__wrap_/{where = match($$0,"__wrap_[_[:alnum:]]+"); if (RSTART > 0) { print "-Wl,--wrap=" substr($$0, RSTART+7, RLENGTH-7);}}' $(basename $@).c`
+## transfer __wrap_*() functions to according linker flags via rudimentary regex awk parsing,
+## e.g. __wrap_channel_get becomes -Wl,--wrap=channel_get.
+LDMOCKS = `/usr/bin/env gawk '/^[^(extern)|(static)]*([\*_[:alnum:]]+[[:blank:]]+)+[\*]*__wrap_/{where = match($$0,"__wrap_[_[:alnum:]]+"); if (RSTART > 0) { print "-Wl,--wrap=" substr($$0, RSTART+7, RLENGTH-7);}}' $(basename $@).c`
 
 quiet_cmd_linktestexe = LD      $(basename $@)
       cmd_linktestexe = $(srctree)/scripts/trylink \
@@ -68,8 +72,10 @@ tests:
 	@:
 endif
 
-$(obj)/%.lnk: $(obj)/%.o $(objtree)/core/built-in.o
+$(objtree)/core/built-in.o.tmp: $(objtree)/core/built-in.o
 	$(Q)$(STRIP) -N main -o $(objtree)/core/built-in.o.tmp $(objtree)/core/built-in.o
+
+$(obj)/%.lnk: $(obj)/%.o $(objtree)/core/built-in.o.tmp
 	$(Q)$(call cmd,linktestexe)
 
 DATADIR := test/data

@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -13,9 +13,6 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/stat.h>
-#if defined(__linux__)
-#include <linux/types.h>
-#endif
 #include <compat.h>
 #include <limits.h>
 #include <assert.h>
@@ -26,6 +23,7 @@
 #include "parselib.h"
 #include "swupdate_settings.h"
 #include "semver.h"
+#include "versions.h"
 
 /*
  * Read versions of components from a file, if provided
@@ -176,7 +174,7 @@ static bool version_to_number(const char *version_string, __u64 *version_number)
 		}
 		version = (version << 16) | fld;
 	}
-	if (count >= 4) {
+	if (count > 4) {
 		DEBUG("Version %s had more than 4 numbers, trailing numbers will be ignored",
 		      version_string);
 	} else if (count > 0) {
@@ -202,7 +200,7 @@ static bool is_oldstyle_version(const char *version_string, __u64 *version_numbe
 			return false;
 		++ver;
 	}
-	return version_to_number(version_string, version_number);;
+	return version_to_number(version_string, version_number);
 }
 
 /*

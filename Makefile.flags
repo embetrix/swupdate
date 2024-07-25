@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2013 Stefano Babic <sbabic@denx.de>
+# SPDX-FileCopyrightText: 2013 Stefano Babic <stefano.babic@swupdate.org>
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -106,7 +106,7 @@ export SYSROOT=$(CONFIG_SYSROOT)
 endif
 
 # Links always pthread
-LDLIBS += pthread
+LDLIBS += pthread ubootenv json-c
 # lua
 ifneq ($(CONFIG_LUA),)
 LDFLAGS_swupdate += -Wl,-E
@@ -118,13 +118,11 @@ LUAVER :=  $(shell $(PKG_CONFIG) $(PKG_CONFIG_FLAGS) --modversion ${CONFIG_LUAPK
 endif
 
 ifeq ($(CONFIG_LUA),y)
-ifeq ($(CONFIG_HANDLER_IN_LUA),y)
 ifeq ($(CONFIG_EMBEDDED_LUA_HANDLER),y)
 ifneq ($(CONFIG_EMBEDDED_LUA_HANDLER_SOURCE),)
 LDFLAGS_swupdate += -Wl,--format=binary -Wl,$(CONFIG_EMBEDDED_LUA_HANDLER_SOURCE) -Wl,--format=default
 KBUILD_CPPFLAGS += -DEMBEDDED_LUA_SRC_START="_binary_$(subst ",,$(subst .,_,$(subst /,_,$(CONFIG_EMBEDDED_LUA_HANDLER_SOURCE))))_start"
 KBUILD_CPPFLAGS += -DEMBEDDED_LUA_SRC_END="_binary_$(subst ",,$(subst .,_,$(subst /,_,$(CONFIG_EMBEDDED_LUA_HANDLER_SOURCE))))_end"
-endif
 endif
 endif
 endif
@@ -142,11 +140,6 @@ endif
 # libarchive
 ifeq ($(CONFIG_ARCHIVE),y)
 LDLIBS += archive
-endif
-
-# json-c
-ifeq ($(CONFIG_JSON),y)
-LDLIBS += json-c
 endif
 
 ifeq ($(CONFIG_SSL_IMPL_OPENSSL),y)
@@ -193,6 +186,14 @@ ifeq ($(CONFIG_EXT_FILESYSTEM),y)
 LDLIBS += ext2fs uuid blkid
 endif
 
+ifeq ($(CONFIG_BTRFS_FILESYSTEM_USELIBMKFS),y)
+LDLIBS += mkfsbtrfs
+endif
+
+ifeq ($(CONFIG_BTRFS_FILESYSTEM),y)
+LDLIBS += btrfsutil udev
+endif
+
 ifeq ($(CONFIG_UNIQUEUUID),y)
 LDLIBS += blkid
 endif
@@ -209,16 +210,28 @@ ifeq ($(CONFIG_UCFWHANDLER),y)
 LDLIBS += gpiod
 endif
 
+
+ifeq ($(CONFIG_BOOTLOADER_STATIC_LINKED),y)
+ifeq ($(CONFIG_BOOTLOADER_EBG),y)
+LDLIBS += ebgenv
+endif
+ifeq ($(CONFIG_BOOTLOADER_CBOOT),y)
+LDLIBS += tegra-boot-tools
+endif
+else
 ifeq ($(CONFIG_UBOOT),y)
 LDLIBS += dl
+endif
+ifeq ($(CONFIG_BOOTLOADER_EBG),y)
+LDLIBS += dl
+endif
+ifeq ($(CONFIG_BOOTLOADER_CBOOT),y)
+LDLIBS += dl
+endif
 endif
 
 ifeq ($(CONFIG_SYSTEMD),y)
 LDLIBS += systemd
-endif
-
-ifeq ($(CONFIG_BOOTLOADER_EBG),y)
-LDLIBS += dl
 endif
 
 ifeq ($(CONFIG_BOOTLOADER_DEFAULT_NONE),y)
@@ -229,6 +242,8 @@ else ifeq ($(CONFIG_BOOTLOADER_DEFAULT_UBOOT),y)
 KBUILD_CPPFLAGS += -DBOOTLOADER_DEFAULT="uboot"
 else ifeq ($(CONFIG_BOOTLOADER_DEFAULT_EBG),y)
 KBUILD_CPPFLAGS += -DBOOTLOADER_DEFAULT="ebg"
+else ifeq ($(CONFIG_BOOTLOADER_DEFAULT_CBOOT),y)
+KBUILD_CPPFLAGS += -DBOOTLOADER_DEFAULT="cboot"
 else
 KBUILD_CPPFLAGS += -DBOOTLOADER_DEFAULT="none"
 endif
@@ -280,3 +295,7 @@ endif
 # (we stole scripts/checkstack.pl from the kernel... thanks guys!)
 # Reduced from 20k to 16k in 1.9.0.
 FLTFLAGS += -s 16000
+
+ifeq ($(CONFIG_SIGALG_GPG),y)
+LDLIBS += gpgme
+endif

@@ -1,7 +1,6 @@
 /*
- * (C) Copyright 2013
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de
- * 	on behalf of ifm electronic GmbH
+ * (C) Copyright 2013-2023
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -15,6 +14,7 @@
 #include "generated/autoconf.h"
 #include "swupdate.h"
 #include "parsers.h"
+#include "hw-compatibility.h"
 
 #ifdef CONFIG_LUAEXTERNAL
 #include "lua.h"
@@ -104,12 +104,13 @@ static void sw_append_stream(struct img_type *img, const char *key,
 		img->id.install_if_higher = 1;
 }
 
-int parse_external(struct swupdate_cfg *software, const char *filename)
+int parse_external(struct swupdate_cfg *software, const char *filename,
+		   char __attribute__((__unused__)) **error)
 {
 	int ret;
 	unsigned int nstreams;
 	struct img_type *image;
-	struct hw_type hardware;
+	struct hw_type hardware = {0};
 
 	lua_State *L = luaL_newstate(); /* opens Lua */
 	luaL_openlibs(L); /* opens the standard libraries */
@@ -200,8 +201,9 @@ int parse_external(struct swupdate_cfg *software, const char *filename)
 }
 #else
 
-int parse_external(struct swupdate_cfg __attribute__ ((__unused__)) *software,
-			const char __attribute__ ((__unused__)) *filename)
+int parse_external(struct swupdate_cfg __attribute__((__unused__)) *software,
+		   const char __attribute__((__unused__)) *filename,
+		   char __attribute__((__unused__)) **error)
 {
 	return -1;
 }

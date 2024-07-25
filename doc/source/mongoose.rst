@@ -1,4 +1,4 @@
-.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <sbabic@denx.de>
+.. SPDX-FileCopyrightText: 2013-2021 Stefano Babic <stefano.babic@swupdate.org>
 .. SPDX-License-Identifier: GPL-2.0-only
 
 ====================
@@ -70,7 +70,7 @@ style sheet changes need a rebuild of the web application source code.
 Develop
 -------
 
-The development requires Node.js version 6 or greater and a prebuilt
+The development requires Node.js version 18 or greater and a prebuilt
 SWUpdate project with enabled mongoose web server and web application
 interface version 2 support.
 

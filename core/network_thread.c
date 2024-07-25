@@ -1,7 +1,6 @@
 /*
- * (C) Copyright 2012-2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
- * 	on behalf of ifm electronic GmbH
+ * (C) Copyright 2013-2023
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -27,18 +26,15 @@
 #include "util.h"
 #include "network_ipc.h"
 #include "network_interface.h"
+#include "network_utils.h"
 #include "installer.h"
 #include "installer_priv.h"
 #include "swupdate.h"
+#include "hw-compatibility.h"
 #include "pctl.h"
 #include "generated/autoconf.h"
 #include "state.h"
-
-#ifdef CONFIG_SYSTEMD
-#include <systemd/sd-daemon.h>
-#endif
-
-#define LISTENQ	1024
+#include "swupdate_vars.h"
 
 #define NUM_CACHED_MESSAGES 100
 #define DEFAULT_INTERNAL_TIMEOUT 60
@@ -220,58 +216,6 @@ static void network_notifier(RECOVERY_STATUS status, int error, int level, const
 	pthread_mutex_unlock(&msglock);
 }
 
-int listener_create(const char *path, int type)
-{
-	struct sockaddr_un servaddr;
-	int listenfd = -1;
-
-#ifdef CONFIG_SYSTEMD
-	if (sd_booted()) {
-		for (int fd = SD_LISTEN_FDS_START; fd < SD_LISTEN_FDS_START + sd_listen_fds(0); fd++) {
-			if (sd_is_socket_unix(fd, SOCK_STREAM, 1, path, 0)) {
-				listenfd = fd;
-				break;
-			}
-		}
-		if (listenfd == -1) {
-			TRACE("got no socket at %s from systemd", path);
-		} else {
-			TRACE("got socket fd=%d at %s from systemd", listenfd, path);
-		}
-	}
-#endif
-
-	if (listenfd == -1) {
-		TRACE("creating socket at %s", path);
-		listenfd = socket(AF_LOCAL, type, 0);
-		if (listenfd < 0) {
-			return -1;
-		}
-		unlink(path);
-		bzero(&servaddr, sizeof(servaddr));
-		servaddr.sun_family = AF_LOCAL;
-		strlcpy(servaddr.sun_path, path, sizeof(servaddr.sun_path) - 1);
-
-		if (bind(listenfd,  (struct sockaddr *) &servaddr, sizeof(servaddr)) < 0) {
-			close(listenfd);
-			return -1;
-		}
-
-		if (chmod(path,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH) < 0)
-			WARN("chmod cannot be set on socket, error %s", strerror(errno));
-	}
-
-	if (fcntl(listenfd, F_SETFD, FD_CLOEXEC) < 0)
-		WARN("Could not set %d as cloexec: %s", listenfd, strerror(errno));
-
-	if (type == SOCK_STREAM)
-		if (listen(listenfd, LISTENQ) < 0) {
-			close(listenfd);
-			return -1;
-		}
-	return listenfd;
-}
-
 static void cleanum_msg_list(void)
 {
 	struct msg_elem *notification;
@@ -308,20 +252,6 @@ static void empty_pipe(int fd)
 		if (read(fd, &msg, sizeof(msg)) < 0)
 			break;
 	} while (1);
-}
-
-static void unlink_socket(void)
-{
-#ifdef CONFIG_SYSTEMD
-	if (sd_booted()) {
-		/*
-		 * There were socket fds handed-over by systemd,
-		 * so don't delete the socket file.
-		 */
-		return;
-	}
-#endif
-	unlink(get_ctrl_socket());
 }
 
 static void send_subprocess_reply(
@@ -407,11 +337,6 @@ static void *subprocess_thread (void *data)
 	(void)data;
 	thread_ready();
 
-	sigset_t sigpipe_mask;
-	sigemptyset(&sigpipe_mask);
-	sigaddset(&sigpipe_mask, SIGPIPE);
-	pthread_sigmask(SIG_BLOCK, &sigpipe_mask, NULL);
-
 	pthread_mutex_lock(&subprocess_msg_lock);
 
 	while(1) {
@@ -451,6 +376,7 @@ void *network_thread (void *data)
 	struct subprocess_msg_elem *subprocess_msg;
 	bool should_close_socket;
 	struct swupdate_cfg *cfg;
+	char *varvalue;
 
 	if (!instp) {
 		TRACE("Fatal error: Network thread aborting...");
@@ -462,6 +388,11 @@ void *network_thread (void *data)
 	SIMPLEQ_INIT(&subprocess_messages);
 	register_notifier(network_notifier);
 
+	sigset_t sigpipe_mask;
+	sigemptyset(&sigpipe_mask);
+	sigaddset(&sigpipe_mask, SIGPIPE);
+	pthread_sigmask(SIG_BLOCK, &sigpipe_mask, NULL);
+
 	subprocess_ipc_handler_thread_id = start_thread(subprocess_thread, NULL);
 
 	/* Initialize and bind to UDS */
@@ -469,11 +400,6 @@ void *network_thread (void *data)
 	if (ctrllisten < 0 ) {
 		ERROR("Error creating IPC control socket");
 		exit(2);
-	}
-
-	if (atexit(unlink_socket) != 0) {
-		TRACE("Cannot setup socket cleanup on exit, %s won't be unlinked.",
-			  get_ctrl_socket());
 	}
 
 	thread_ready();
@@ -498,9 +424,6 @@ void *network_thread (void *data)
 			close(ctrlconnfd);
 			continue;
 		}
-#ifdef DEBUG_IPC
-		TRACE("request header: magic[0x%08X] type[0x%08X]", msg.magic, msg.type);
-#endif
 
 		should_close_socket = true;
 		pthread_mutex_lock(&stream_mutex);
@@ -561,7 +484,8 @@ void *network_thread (void *data)
 						cleanum_msg_list();
 
 						/* Wake-up the installer */
-						pthread_cond_signal(&stream_wkup);
+						stream_wkup = true;
+						pthread_cond_signal(&stream_cond);
 					} else {
 						msg.type = NACK;
 						memset(msg.data.msg, 0, sizeof(msg.data.msg));
@@ -586,9 +510,6 @@ void *network_thread (void *data)
 					nrmsgs--;
 					strncpy(msg.data.status.desc, notification->msg,
 						sizeof(msg.data.status.desc) - 1);
-#ifdef DEBUG_IPC
-					DEBUG("GET STATUS: %s\n", msg.data.status.desc);
-#endif
 					msg.data.status.current = notification->status;
 					msg.data.status.error = notification->error;
 				}
@@ -610,11 +531,9 @@ void *network_thread (void *data)
 					break;
 				}
 
-				/* Get first notification from the queue */
-				pthread_mutex_lock(&msglock);
-				notification = SIMPLEQ_FIRST(&notifymsgs);
-
 				/* Send notify history */
+				pthread_mutex_lock(&msglock);
+				ret = 0;
 				SIMPLEQ_FOREACH_SAFE(notification, &notifymsgs, next, tmp) {
 					memset(msg.data.msg, 0, sizeof(msg.data.msg));
 
@@ -626,11 +545,14 @@ void *network_thread (void *data)
 
 					ret = write_notify_msg(&msg, ctrlconnfd);
 					if (ret < 0) {
-						pthread_mutex_unlock(&msglock);
-						ERROR("Error write notify history on socket ctrl");
-						close(ctrlconnfd);
 						break;
 					}
+				}
+				if (ret < 0) {
+					pthread_mutex_unlock(&msglock);
+					ERROR("Error write notify history on socket ctrl");
+					close(ctrlconnfd);
+					break;
 				}
 
 				/*
@@ -688,6 +610,22 @@ void *network_thread (void *data)
 				msg.data.msg[0] = get_state();
 				msg.type = ACK;
 				break;
+			case SET_SWUPDATE_VARS:
+				msg.type = swupdate_vars_set(msg.data.vars.varname,
+						  strlen(msg.data.vars.varvalue) ? msg.data.vars.varvalue : NULL,
+						  msg.data.vars.varnamespace) == 0 ? ACK : NACK;
+				break;
+			case GET_SWUPDATE_VARS:
+				varvalue = swupdate_vars_get(msg.data.vars.varname,
+						  msg.data.vars.varnamespace);
+				memset(msg.data.vars.varvalue, 0, sizeof(msg.data.vars.varvalue));
+				if (varvalue) {
+					strlcpy(msg.data.vars.varvalue, varvalue, sizeof(msg.data.vars.varvalue));
+					free(varvalue);
+					msg.type = ACK;
+				} else
+					msg.type = NACK;
+				break;
 			default:
 				msg.type = NACK;
 			}
@@ -700,7 +638,7 @@ void *network_thread (void *data)
 		if (msg.type == ACK || msg.type == NACK) {
 			ret = write(ctrlconnfd, &msg, sizeof(msg));
 			if (ret < 0)
-				ERROR("Error write on socket ctrl");
+				ERROR("Error write on socket ctrl: %s", strerror(errno));
 
 			if (should_close_socket == true)
 				close(ctrlconnfd);

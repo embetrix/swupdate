@@ -1,7 +1,6 @@
 /*
- * (C) Copyright 2014
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
- * 	on behalf of ifm electronic GmbH
+ * (C) Copyright 2014-2023
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
@@ -16,8 +15,8 @@
 #include <errno.h>
 #include <string.h>
 
-#include "swupdate.h"
 #include "handler.h"
+#include "swupdate_image.h"
 #include "util.h"
 #include "pctl.h"
 
@@ -63,6 +62,9 @@ static int start_shell_script(struct img_type *img, void *data)
 		break;
 	case POSTINSTALL:
 		fnname="postinst";
+		break;
+	case POSTFAILURE:
+		fnname="failure";
 		break;
 	default:
 		/* no error, simply no call */

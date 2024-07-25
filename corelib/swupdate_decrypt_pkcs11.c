@@ -49,6 +49,7 @@ struct swupdate_digest *swupdate_DECRYPT_init(unsigned char *uri,
 	if (err) {
 		msg = p11_kit_uri_message(err);
 		ERROR("PKCS#11 URI: %s", msg);
+		free(dgst);
 		return NULL;
 	}
 
@@ -156,13 +157,17 @@ int swupdate_DECRYPT_final(struct swupdate_digest *dgst, unsigned char *buf, int
 {
 	unsigned char last_oct = dgst->last_decr[AES_BLK_SIZE - 1];
 	if (last_oct > AES_BLK_SIZE || last_oct == 0) {
+#ifndef CONFIG_ENCRYPTED_IMAGES_HARDEN_LOGGING
 		ERROR("AES: Invalid PKCS#7 padding.");
+#endif
 		return -EFAULT;
 	}
 
 	for (int i = 2; i <= last_oct; i++) {
 		if (dgst->last_decr[AES_BLK_SIZE - i] != last_oct) {
+#ifndef CONFIG_ENCRYPTED_IMAGES_HARDEN_LOGGING
 			ERROR("AES: Invalid PKCS#7 padding.");
+#endif
 			return -EFAULT;
 		}
 	}

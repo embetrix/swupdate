@@ -1,6 +1,6 @@
 /*
  * (C) Copyright 2016
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic, stefano.babic@swupdate.org.
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  *
@@ -98,9 +98,11 @@ int swupdate_DECRYPT_final(struct swupdate_digest *dgst, unsigned char *buf,
 		return -EINVAL;
 
 	if (EVP_DecryptFinal_ex(SSL_GET_CTXDEC(dgst), buf, outlen) != 1) {
+#ifndef CONFIG_ENCRYPTED_IMAGES_HARDEN_LOGGING
 		const char *reason = ERR_reason_error_string(ERR_peek_error());
 		ERROR("Final: Decryption error 0x%lx, reason: %s", ERR_get_error(),
 			reason != NULL ? reason : "unknown");
+#endif
 		return -EFAULT;
 	}
 

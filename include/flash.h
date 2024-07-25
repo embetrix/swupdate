@@ -1,13 +1,12 @@
 /*
  * (C) Copyright 2014
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
 
 
-#ifndef _FLASH_PART_H
-#define _FLASH_PART_H
+#pragma once
 
 #include <stdint.h>
 #include <libmtd.h>
@@ -51,6 +50,7 @@ int scan_mtd_devices (void);
 void mtd_cleanup (void);
 int get_mtd_from_device(char *s);
 int get_mtd_from_name(const char *s);
+long long get_mtd_size(int mtdnum);
 int flash_erase(int mtdnum);
 int flash_erase_sector(int mtdnum, off_t start, size_t size);
 
@@ -58,5 +58,3 @@ struct flash_description *get_flash_info(void);
 #define isNand(flash, index) \
 	(flash->mtd_info[index].mtd.type == MTD_NANDFLASH || \
 	 flash->mtd_info[index].mtd.type == MTD_MLCNANDFLASH)
-
-#endif

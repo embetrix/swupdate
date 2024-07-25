@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2017 Stefano Babic <sbabic@denx.de>
+# SPDX-FileCopyrightText: 2017 Stefano Babic <stefano.babic@swupdate.org>
 #
 # SPDX-License-Identifier: GPL-2.0-only
 
@@ -14,15 +14,23 @@ config BOOTLOADER_NONE
 
 config BOOTLOADER_EBG
 	bool "EFI Boot Guard"
+	depends on HAVE_LIBEBGENV
 	help
 	  Support for EFI Boot Guard
 	  https://github.com/siemens/efibootguard
 
+comment "EFI Boot Guard needs libebgenv and libz"
+	depends on !HAVE_ZLIB || !HAVE_LIBEBGENV
+
 config UBOOT
 	bool "U-Boot"
+	depends on HAVE_LIBUBOOTENV
 	help
 	  Support for U-Boot
 	  https://www.denx.de/wiki/U-Boot
+
+comment "U-Boot needs libubootenv"
+	depends on !HAVE_LIBUBOOTENV
 
 config UBOOT_FWENV
 	string "U-Boot Environment Configuration file"
@@ -54,6 +62,19 @@ config GRUBENV_PATH
 	default "/boot/efi/EFI/BOOT/grub/grubenv"
 	help
 	  Provide path to GRUB environment block file
+
+config BOOTLOADER_CBOOT
+	bool "NVIDIA Tegra Cboot"
+	depends on HAVE_LIBTEGRABOOT_TOOLS
+	help
+	  Support for NVIDIA's cboot used on some Tegra platform. Tegra
+	  uses different bootloader, depending on the SOC and on the release
+	  provided by vendor. Some SOCs (associated with some releases) are still
+	  using U-Boot (Jetson Nano, TX, TX2), some of them are using Cboot (Xavier),
+	  and some of them rely on UEFI. This adds support for cboot.
+
+comment "Cboot needs libtegra-boot-tools"
+	depends on !HAVE_LIBTEGRABOOT_TOOLS
 
 endmenu
 
@@ -90,6 +111,12 @@ config BOOTLOADER_DEFAULT_GRUB
 	help
 	  Use GRUB as default bootloader interface.
 
+config BOOTLOADER_DEFAULT_CBOOT
+	bool "Cboot"
+	depends on BOOTLOADER_CBOOT
+	help
+	  Use NVIDIA Cboot as default bootloader interface.
+
 config BOOTLOADER_DEFAULT_NONE
 	bool "Environment in RAM"
 	depends on BOOTLOADER_NONE
@@ -98,17 +125,22 @@ config BOOTLOADER_DEFAULT_NONE
 
 endchoice
 
+config BOOTLOADER_STATIC_LINKED
+	bool "Bootloader interface static linked"
+	help
+	  Link statically the interface to the bootloader. In case of distros,
+	  more interfaces are available at the same time and SWUpdate checks
+	  at runtime and loads the interface via dlopen(). This is available
+	  with glibc and dlopen support. For other system, the interface can be linked
+	  statically.
+
+
 choice
 	prompt "Update Status Storage"
 	help
 	  Place to persistently store the update
 	  status for, e.g., communicating it to SWUpdate after
 	  a reboot.
-
-config UPDATE_STATE_CHOICE_NONE
-	bool "None"
-	help
-	  Do not store update status.
 
 config UPDATE_STATE_CHOICE_BOOTLOADER
 	bool "Bootloader"

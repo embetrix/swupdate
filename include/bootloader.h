@@ -1,11 +1,18 @@
 /*
  * (C) Copyright 2017
- * Stefano Babic, DENX Software Engineering, sbabic@denx.de.
+ * Stefano Babic <stefano.babic@swupdate.org>
  *
  * SPDX-License-Identifier:     GPL-2.0-only
  */
 
 #pragma once
+#include <stdbool.h>
+
+#define BOOTLOADER_EBG   "ebg"
+#define BOOTLOADER_NONE  "none"
+#define BOOTLOADER_GRUB  "grub"
+#define BOOTLOADER_UBOOT "uboot"
+#define BOOTLOADER_CBOOT "cboot"
 
 #define load_symbol(handle, container, fname) \
 	*(void**)(container) = dlsym(handle, fname); \
@@ -49,6 +56,16 @@ int set_bootloader(const char *name);
  *   name on success, NULL on error.
  */
 const char* get_bootloader(void);
+
+/*
+ * is_bootloader - Test whether bootloader is currently selected
+ *
+ * @name : bootloader name to check if it's the currently selected one
+ *
+ * Return:
+ *   true if name is currently selected bootloader, false otherwise
+ */
+bool is_bootloader(const char *name);
 
 /*
  * print_registered_bootloaders - print registered bootloaders
