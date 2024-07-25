@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <errno.h>
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -525,6 +526,7 @@ static void channel_push_options(lua_State *L, channel_data_t *channel_data)
 	push_to_table(L, "dry_run",            channel_data->dry_run);
 	push_to_table(L, "cafile",             channel_data->cafile);
 	push_to_table(L, "sslkey",             channel_data->sslkey);
+	push_to_table(L, "sslkeypassword",     channel_data->sslkeypassword);
 	push_to_table(L, "sslcert",            channel_data->sslcert);
 	push_to_table(L, "ciphers",            channel_data->ciphers);
 	if (channel_data->proxy && channel_data->proxy == USE_PROXY_ENV) {
@@ -571,6 +573,7 @@ static void channel_set_options(lua_State *L, channel_data_t *channel_data)
 	get_from_table(L, "dry_run",            channel_data->dry_run);
 	get_from_table(L, "cafile",             channel_data->cafile, COPY_DEST);
 	get_from_table(L, "sslkey",             channel_data->sslkey, COPY_DEST);
+	get_from_table(L, "sslkeypassword",     channel_data->sslkeypassword, COPY_DEST);
 	get_from_table(L, "sslcert",            channel_data->sslcert, COPY_DEST);
 	get_from_table(L, "ciphers",            channel_data->ciphers, COPY_DEST);
 	get_from_table(L, "info",               channel_data->info, COPY_DEST);
@@ -591,6 +594,9 @@ static void channel_set_options(lua_State *L, channel_data_t *channel_data)
 	get_from_table(L, "max_download_speed", max_download_speed);
 	if (max_download_speed) {
 		channel_data->max_download_speed = (unsigned int)ustrtoull(max_download_speed, NULL, 10);
+		if (errno)
+			WARN("max-download-speed %s: ustrtoull failed",
+			     max_download_speed);
 		free(max_download_speed);
 	}
 	lua_getfield(L, -1, "proxy");
@@ -623,6 +629,7 @@ static void channel_free_options(channel_data_t *channel_data)
 	free(channel_data->iface);
 	free(channel_data->cafile);
 	free(channel_data->sslkey);
+	free(channel_data->sslkeypassword);
 	free(channel_data->sslcert);
 	free(channel_data->ciphers);
 	if (channel_data->proxy && channel_data->proxy != USE_PROXY_ENV) {
@@ -1587,6 +1594,11 @@ static int suricatta_lua_module(lua_State *L)
 	push_to_table(L, "DONE", SUBPROCESS);
 	push_to_table(L, "SUBPROCESS", SUBPROCESS);
 	push_to_table(L, "PROGRESS", PROGRESS);
+	lua_settable(L, -3);
+	lua_pushstring(L, "progress_cause");
+	lua_newtable(L);
+	push_to_table(L, "CAUSE_NONE", CAUSE_NONE);
+	push_to_table(L, "CAUSE_REBOOT_MODE", CAUSE_REBOOT_MODE);
 	lua_settable(L, -3);
 	lua_settable(L, -3);
 

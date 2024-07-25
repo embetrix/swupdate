@@ -17,25 +17,55 @@
 #include "generated/autoconf.h"
 #include "bsdqueue.h"
 #include "util.h"
+#include "parsers.h"
 #include "parselib.h"
+#include "parselib-private.h"
 
-void get_value_libconfig(const config_setting_t *e, void *dest)
+static unsigned int map_field_type(field_type_t type)
 {
-	int type = config_setting_type(e);
 	switch (type) {
-	case CONFIG_TYPE_INT:
+	case TYPE_INT:
+		return CONFIG_TYPE_INT;
+	case TYPE_INT64:
+		return CONFIG_TYPE_INT64;
+	case TYPE_BOOL:
+		return CONFIG_TYPE_BOOL;
+	case TYPE_DOUBLE:
+		return CONFIG_TYPE_FLOAT;
+	default: /* not supported in SWUpdate */
+		return CONFIG_TYPE_NONE;
+	}
+}
+
+
+static void get_value_libconfig(const config_setting_t *e, const char *path, void *dest, field_type_t expected_type)
+{
+	int parsed_type = config_setting_type(e);
+	if (parsed_type != map_field_type(expected_type)) {
+		/* Weaken type equality requirements for INT/INT64 */
+		if ((parsed_type == CONFIG_TYPE_INT && expected_type == TYPE_INT64) ||
+		    (parsed_type == CONFIG_TYPE_INT64 && expected_type == TYPE_INT)) {
+			/* ignore type mismatch, handled well by libconfig */
+		} else {
+			WARN("Type mismatch for %s field \"%s\"", SW_DESCRIPTION_FILENAME, path);
+			return;
+		}
+	}
+
+	switch (expected_type) {
+	case TYPE_INT:
+		/* libconfig handles also 'L' suffixed integers as long as they fit
+		 * into INT32. Otherwise zero is returned
+		 */
 		*(int *)dest = config_setting_get_int(e);
 		break;
-	case CONFIG_TYPE_INT64:
+	case TYPE_INT64:
 		*(long long *)dest = config_setting_get_int64(e);
 		break;
-	case CONFIG_TYPE_STRING:
-		dest = (void *)config_setting_get_string(e);
-		break;
-	case CONFIG_TYPE_BOOL:
+	case TYPE_BOOL:
 		*(bool *)dest = config_setting_get_bool(e);
 		break;
-	case CONFIG_TYPE_FLOAT:
+	case TYPE_DOUBLE:
 		*(double *)dest = config_setting_get_float(e);
 		break;
 		/* Do nothing, add if needed */
@@ -91,7 +121,7 @@ bool is_field_numeric_cfg(config_setting_t *e, const char *path)
 	       type == CONFIG_TYPE_FLOAT;
 }
 
-void get_field_cfg(config_setting_t *e, const char *path, void *dest)
+void get_field_cfg(config_setting_t *e, const char *path, void *dest, field_type_t type)
 {
 	config_setting_t *elem;
 
@@ -103,7 +133,7 @@ void get_field_cfg(config_setting_t *e, const char *path, void *dest)
 	if (!elem)
 		return;
 
-	get_value_libconfig(elem, dest);
+	get_value_libconfig(elem, path, dest, type);
 }
 
 const char *get_field_string_libconfig(config_setting_t *e, const char *path)
@@ -174,7 +204,7 @@ void *find_root_libconfig(config_t *cfg, const char **nodes, unsigned int depth)
 	if (elem && config_setting_is_group(elem) == CONFIG_TRUE) {
 		ref = get_field_string_libconfig(elem, "ref");
 		if (ref) {
-			if (!set_find_path(nodes, ref, tmp)) {
+			if (!set_find_path(nodes, ref, &tmp)) {
 				free(root);
 				return NULL;
 			}

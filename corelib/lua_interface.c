@@ -388,7 +388,7 @@ static int l_copy2file(lua_State *L)
 	}
 
 	struct img_type img = {};
-	uint32_t checksum = 0;
+	uint32_t image_checksum = img.checksum;
 
 	table2image(L, &img);
 	if (check_same_file(img.fdin, fdout)) {
@@ -397,18 +397,7 @@ static int l_copy2file(lua_State *L)
 		lua_pushstring(L, "Output file path is same as input file temporary path");
 		goto copyfile_exit;
 	}
-	int ret = copyfile(img.fdin,
-				 &fdout,
-				 img.size,
-				 (unsigned long *)&img.offset,
-				 img.seek,
-				 0, /* no skip */
-				 img.compressed,
-				 &checksum,
-				 img.sha256,
-				 img.is_encrypted,
-				 img.ivt_ascii,
-				 NULL);
+	int ret = copyimage(&fdout, &img, NULL /* default write callback */);
 	update_table(L, &img);
 	lua_pop(L, 1);
 
@@ -417,10 +406,10 @@ static int l_copy2file(lua_State *L)
 		lua_pushstring(L, strerror(errno));
 		goto copyfile_exit;
 	}
-	if ((img.checksum != 0) && (checksum != img.checksum)) {
+	if ((image_checksum != 0) && (image_checksum != img.checksum)) {
 		lua_pushinteger(L, -1);
 		lua_pushfstring(L, "Checksums WRONG! Computed 0x%d, should be 0x%d\n",
-						checksum, img.checksum);
+				img.checksum, image_checksum);
 		goto copyfile_exit;
 	}
 
@@ -463,24 +452,13 @@ static int l_istream_read(lua_State* L)
 	luaL_checktype(L, 2, LUA_TFUNCTION);
 
 	struct img_type img = {};
-	uint32_t checksum = 0;
+	uint32_t image_checksum = img.checksum;
 
 	lua_pushvalue(L, 1);
 	table2image(L, &img);
 	lua_pop(L, 1);
 
-	int ret = copyfile(img.fdin,
-				 L,
-				 img.size,
-				 (unsigned long *)&img.offset,
-				 img.seek,
-				 0, /* no skip */
-				 img.compressed,
-				 &checksum,
-				 img.sha256,
-				 img.is_encrypted,
-				 img.ivt_ascii,
-				 istream_read_callback);
+	int ret = copyimage(L, &img, istream_read_callback);
 
 	lua_pop(L, 1);
 	update_table(L, &img);
@@ -491,10 +469,10 @@ static int l_istream_read(lua_State* L)
 		lua_pushstring(L, strerror(errno));
 		return 2;
 	}
-	if ((img.checksum != 0) && (checksum != img.checksum)) {
+	if ((image_checksum != 0) && (image_checksum != img.checksum)) {
 		lua_pushinteger(L, -1);
 		lua_pushfstring(L, "Checksums WRONG! Computed 0x%d, should be 0x%d\n",
-						checksum, img.checksum);
+				img.checksum, image_checksum);
 		return 2;
 	}
 	lua_pushinteger(L, 0);
@@ -1298,8 +1276,6 @@ static int luaopen_swupdate(lua_State *L)
 	return 1;
 }
 
-static lua_State *gL = NULL;
-
 /**
  * @brief wrapper to call the Lua function
  *
@@ -1324,14 +1300,15 @@ static int l_handler_wrapper(struct img_type *img, void *data,
 	struct installer_handler *hnd;
 	hnd = find_handler(img);
 
-	if (!gL || !img || !data || !hnd) {
+	if (!img || !data || !hnd) {
 		return -1;
 	}
 
 	if (hnd->noglobal) {
 		L = img->L;
 	} else {
-		L = gL;
+		ERROR("Calling session Lua handler in non-session context.");
+		return -1;
 	}
 
 	if (img->bootloader) {
@@ -1407,7 +1384,6 @@ static int l_other_handler_wrapper(struct img_type *img, void *data)
  */
 static int l_register_handler( lua_State *L ) {
 	int *l_func_ref = malloc(sizeof(int));
-	handler_type_t lifetime = GLOBAL_HANDLER;
 
 	if(!l_func_ref) {
 		ERROR("Lua handler: unable to allocate memory");
@@ -1435,34 +1411,31 @@ static int l_register_handler( lua_State *L ) {
 
 		const char *handler_desc = luaL_checkstring(L, 1);
 
-		/*
-		 * Check if the handler must be registered globally
-		 * or just during the update
-		 */
-		if (L != gL) {
-			lifetime = SESSION_HANDLER;
-		}
 		/* store the callback function in registry */
 		*l_func_ref = luaL_ref (L, LUA_REGISTRYINDEX);
 		/* cleanup stack */
 		lua_pop (L, 1);
 
-		switch (lifetime) {
-		case GLOBAL_HANDLER:
-			register_handler(handler_desc,
-				 (mask & SCRIPT_HANDLER) ?
-				 l_script_handler_wrapper :
-				 l_other_handler_wrapper,
-				 mask, l_func_ref);
-			break;
-		case SESSION_HANDLER:
-			register_session_handler(handler_desc,
-				 (mask & SCRIPT_HANDLER) ?
-				 l_script_handler_wrapper :
-				 l_other_handler_wrapper,
-				 mask, l_func_ref);
-			break;
+		register_session_handler(handler_desc,
+				(mask & SCRIPT_HANDLER) ?
+				l_script_handler_wrapper :
+				l_other_handler_wrapper,
+				mask, l_func_ref);
+
+		/* add newly registered handler to current Lua stack */
+		lua_getglobal(L, "swupdate");
+		lua_pushliteral(L, "handler");
+		lua_gettable(L, -2);
+		if (lua_istable(L, -1)) {
+			lua_pushstring(L, handler_desc);
+			lua_pushnumber(L, 1);
+			lua_settable(L, -3);
+		} else {
+			TRACE("swupdate.handler Table absent in current Lua "
+			      "context, not inserting handler '%s'", handler_desc);
 		}
+		lua_pop(L, 2);
+
 		return 0;
 	}
 }
@@ -1516,7 +1489,7 @@ call_handler_exit:
 	return 2;
 }
 
-int lua_handlers_init(lua_State *L)
+static int lua_handlers_init(lua_State *L, struct dict *bootenv)
 {
 	static const char location[] =
 #if defined(CONFIG_EMBEDDED_LUA_HANDLER)
@@ -1526,17 +1499,27 @@ int lua_handlers_init(lua_State *L)
 #endif
 	int ret = -1;
 
-	if (!L) {
-		gL = luaL_newstate();
-		L = gL;
-	}
 	if (L) {
-		/* prime gL as LUA_TYPE_HANDLER */
+		/* prime L as LUA_TYPE_HANDLER */
 		lua_pushlightuserdata(L, (void*)LUA_TYPE_HANDLER);
 		lua_setglobal(L, "SWUPDATE_LUA_TYPE");
 		/* load standard libraries */
 		luaL_openlibs(L);
+		/* load / fore-reload swupdate module */
+		lua_getglobal(L, "package");
+		lua_pushliteral(L, "loaded");
+		lua_gettable(L, -2);
+		lua_pushstring(L, "swupdate");
+		lua_pushnil(L);
+		lua_settable(L, -3);
+		lua_pop(L, 2);
 		luaL_requiref(L, "swupdate", luaopen_swupdate, 1 );
+		if (bootenv) {
+			struct dict **udbootenv = lua_newuserdata(L, sizeof(struct dict*));
+			*udbootenv = bootenv;
+			luaL_setfuncs(L, l_swupdate_bootenv, 1);
+			lua_pop(L, 1); /* remove unused copy left on stack */
+		}
 		lua_pop(L, 1); /* remove unused copy left on stack */
 		/* try to load Lua handlers for the swupdate system */
 #if defined(CONFIG_EMBEDDED_LUA_HANDLER)
@@ -1559,7 +1542,7 @@ int lua_handlers_init(lua_State *L)
 	return ret;
 }
 
-lua_State *lua_init(struct dict *bootenv)
+lua_State *lua_session_init(struct dict *bootenv)
 {
 	lua_State *L = luaL_newstate(); /* opens Lua */
 
@@ -1570,14 +1553,21 @@ lua_State *lua_init(struct dict *bootenv)
 	lua_setglobal(L, "SWUPDATE_LUA_TYPE"); /* prime L as LUA_TYPE_PEMBSCR */
 	luaL_openlibs(L); /* opens the standard libraries */
 	luaL_requiref(L, "swupdate", luaopen_swupdate, 1 );
-	struct dict **udbootenv = lua_newuserdata(L, sizeof(struct dict*));
-	*udbootenv = bootenv;
-	luaL_setfuncs(L, l_swupdate_bootenv, 1);
-	lua_pop(L, 1); /* remove unused copy left on stack */
 
-	lua_handlers_init(L);
+	lua_handlers_init(L, bootenv);
+
 
 	return L;
+}
+
+int lua_init(void)
+{
+	lua_State *L = luaL_newstate();
+	int res = lua_handlers_init(L, NULL);
+	print_registered_handlers(false);
+	unregister_session_handlers();
+	lua_close(L);
+	return res;
 }
 
 int lua_load_buffer(lua_State *L, const char *buf)

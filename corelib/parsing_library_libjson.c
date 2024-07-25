@@ -17,9 +17,26 @@
 #include "generated/autoconf.h"
 #include "bsdqueue.h"
 #include "util.h"
+#include "parsers.h"
 #include "parselib.h"
+#include "parselib-private.h"
 
 #define MAX_URL_LENGTH 2048
+
+static json_type map_field_type(field_type_t type)
+{
+	switch (type) {
+	case TYPE_INT:
+	case TYPE_INT64:
+		return json_type_int;
+	case TYPE_BOOL:
+		return json_type_boolean;
+	case TYPE_DOUBLE:
+		return json_type_double;
+	default: /* not supported in SWUpdate */
+		return json_type_null;
+	}
+}
 
 json_object *find_json_recursive_node(json_object *root, const char **names)
 {
@@ -102,25 +119,28 @@ const char *get_field_string_json(json_object *e, const char *path)
 	return NULL;
 }
 
-void get_value_json(json_object *e, void *dest)
+static void get_value_json(json_object *e, const char *path, void *dest, field_type_t expected_type)
 {
-	enum json_type type;
-	type = json_object_get_type(e);
-	switch (type) {
-	case json_type_boolean:
-		*(unsigned int *)dest = json_object_get_boolean(e);
+	enum json_type parsed_type;
+	parsed_type = json_object_get_type(e);
+	if (parsed_type != map_field_type(expected_type)) {
+		WARN("Type mismatch for %s field \"%s\"", SW_DESCRIPTION_FILENAME, path);
+		return;
+	}
+	switch (expected_type) {
+	case TYPE_BOOL:
+		*(bool *)dest = json_object_get_boolean(e);
 		break;
-	case json_type_int:
-		*(unsigned int *)dest = json_object_get_int(e);
+	case TYPE_INT:
+		*(int *)dest = json_object_get_int(e);
 		break;
-	case json_type_string:
-		strcpy(dest, json_object_get_string(e));
+	case TYPE_INT64:
+		*(long long *)dest = json_object_get_int(e);
 		break;
-	case json_type_double:
+	case TYPE_DOUBLE:
 		*(double *)dest = json_object_get_double(e);
 		break;
-	default:
-		break;
+		/* Do nothing, add if needed */
 	}
 }
 
@@ -141,15 +161,15 @@ bool is_field_numeric_json(json_object *e, const char *path)
 	       type == json_type_double;
 }
 
-void get_field_json(json_object *e, const char *path, void *dest)
+void get_field_json(json_object *e, const char *path, void *dest, field_type_t type)
 {
 	json_object *fld = NULL;
 
 	if (path) {
 		if (json_object_object_get_ex(e, path, &fld))
-			get_value_json(fld, dest);
+			get_value_json(fld, path, dest, type);
 	} else {
-		get_value_json(e, dest);
+		get_value_json(e, path, dest, type);
 	}
 }
 
@@ -217,7 +237,7 @@ void *find_root_json(json_object *root, const char **nodes, unsigned int depth)
 		if (type == json_type_object || type == json_type_array) {
 			str = get_field_string_json(node, "ref");
 			if (str) {
-				if (!set_find_path(nodes, str, tmp))
+				if (!set_find_path(nodes, str, &tmp))
 					return NULL;
 				node = find_root_json(root, nodes, depth);
 				free_string_array(tmp);

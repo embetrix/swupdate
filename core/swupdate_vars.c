@@ -47,6 +47,10 @@ int swupdate_vars_initialize(struct uboot_ctx **ctx, const char *namespace)
 	}
 
 	*ctx = libuboot_get_namespace(*ctx, namespace);
+	if (!*ctx) {
+		ERROR("Cannot get namespace %s from %s", namespace, get_fwenv_config());
+		return -EINVAL;
+	}
 
 	if (libuboot_open(*ctx) < 0) {
 		WARN("Cannot read environment, maybe still empty ?");
@@ -86,7 +90,7 @@ char *swupdate_vars_get(const char *name, const char *namespace)
 		strlcpy(msg.data.vars.varname, name, sizeof(msg.data.vars.varname));
 
 		if (ipc_send_cmd(&msg) || msg.type == NACK) {
-			ERROR("Failed to get variable %s", name);
+			WARN("Failed to get variable %s", name);
 			return NULL;
 		}
 		return strdup (msg.data.vars.varvalue);

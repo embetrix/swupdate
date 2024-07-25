@@ -144,7 +144,7 @@ static int parser_follow_link(parsertype p, void *cfg, void *elem,
 	for (int j = 0; j < count_string_array(nodes); j++) {
 		linknodes[j] = nodes[j];
 	}
-	if (!set_find_path(linknodes, ref, tmp)) {
+	if (!set_find_path(linknodes, ref, &tmp)) {
 		free(linknodes);
 		return -1;
 	}
@@ -195,7 +195,7 @@ static bool get_common_fields(parsertype p, void *cfg, struct swupdate_cfg *swcf
 	} else {
 		swcfg->bootloader_state_marker = true;
 		if((setting = find_node(p, cfg, "bootloader_state_marker", swcfg)) != NULL) {
-			get_field(p, setting, NULL, &swcfg->bootloader_state_marker);
+			GET_FIELD_BOOL(p, setting, NULL, &swcfg->bootloader_state_marker);
 			TRACE("Setting bootloader state marker: %s",
 			      swcfg->bootloader_state_marker == true ? "true" : "false");
 		}
@@ -206,7 +206,7 @@ static bool get_common_fields(parsertype p, void *cfg, struct swupdate_cfg *swcf
 	} else {
 		swcfg->bootloader_transaction_marker = true;
 		if((setting = find_node(p, cfg, "bootloader_transaction_marker", swcfg)) != NULL) {
-			get_field(p, setting, NULL, &swcfg->bootloader_transaction_marker);
+			GET_FIELD_BOOL(p, setting, NULL, &swcfg->bootloader_transaction_marker);
 			TRACE("Setting bootloader transaction marker: %s",
 			      swcfg->bootloader_transaction_marker == true ? "true" : "false");
 		}
@@ -217,7 +217,7 @@ static bool get_common_fields(parsertype p, void *cfg, struct swupdate_cfg *swcf
 	 */
 	swcfg->reboot_required = true;
 	if((setting = find_node(p, cfg, "reboot", swcfg)) != NULL) {
-		get_field(p, setting, NULL, &swcfg->reboot_required);
+		GET_FIELD_BOOL(p, setting, NULL, &swcfg->reboot_required);
 	}
 
 	TRACE("reboot_required %d", swcfg->reboot_required);
@@ -230,7 +230,6 @@ static bool get_common_fields(parsertype p, void *cfg, struct swupdate_cfg *swcf
 			TRACE("Output file set but not enabled with -o, ignored");
 		} else {
 			GET_FIELD_STRING(p, setting, NULL, swcfg->output);
-			get_field(p, setting, NULL, &swcfg->output);
 			TRACE("Incoming SWU stored : %s", swcfg->output);
 		}
 	}
@@ -428,7 +427,7 @@ static int parse_common_attributes(parsertype p, void *elem, struct img_type *im
 	 * multiplier suffixes are allowed
 	 */
 	if (is_field_numeric(p, elem, "offset")) {
-		get_field(p, elem, "offset", &offset);
+		GET_FIELD_INT64(p, elem, "offset", (long long *)&offset);
 		image->seek = offset;
 	} else {
 		GET_FIELD_STRING(p, elem, "offset", seek_str);
@@ -450,13 +449,15 @@ static int parse_common_attributes(parsertype p, void *elem, struct img_type *im
 			return -1;
 		}
 	} else {
-		get_field(p, elem, "compressed", &image->compressed);
+		bool img_compressed = false;
+		GET_FIELD_BOOL(p, elem, "compressed", &img_compressed);
+		image->compressed = img_compressed ? COMPRESSED_TRUE : COMPRESSED_FALSE;
 	}
-	get_field(p, elem, "installed-directly", &image->install_directly);
-	get_field(p, elem, "preserve-attributes", &image->preserve_attributes);
-	get_field(p, elem, "install-if-different", &image->id.install_if_different);
-	get_field(p, elem, "install-if-higher", &image->id.install_if_higher);
-	get_field(p, elem, "encrypted", &image->is_encrypted);
+	GET_FIELD_BOOL(p, elem, "installed-directly", &image->install_directly);
+	GET_FIELD_BOOL(p, elem, "preserve-attributes", &image->preserve_attributes);
+	GET_FIELD_BOOL(p, elem, "install-if-different", &image->id.install_if_different);
+	GET_FIELD_BOOL(p, elem, "install-if-higher", &image->id.install_if_higher);
+	GET_FIELD_BOOL(p, elem, "encrypted", &image->is_encrypted);
 	GET_FIELD_STRING(p, elem, "ivt", image->ivt_ascii);
 
 	if (is_image_installed(&cfg->installed_sw_list, image)) {
@@ -521,7 +522,7 @@ static int _parse_partitions(parsertype p, void *cfg, void *setting, const char 
 			return -1;
 		}
 
-		get_field(p, elem, "size", &partition->partsize);
+		GET_FIELD_INT64(p, elem, "size", &partition->partsize);
 
 		add_properties(p, elem, partition);
 
@@ -529,6 +530,10 @@ static int _parse_partitions(parsertype p, void *cfg, void *setting, const char 
 		if (skip < 0) {
 			free_image(partition);
 			return -1;
+		}
+		if (skip || partition->skip != SKIP_NONE) {
+			free_image(partition);
+			continue;
 		}
 		TRACE("Partition: %s new size %lld bytes",
 			!strcmp(partition->type, "ubipartition") ? partition->volname : partition->device,
@@ -1023,7 +1028,7 @@ static int parser(parsertype p, void *cfg, struct swupdate_cfg *swcfg)
 		swcfg->embscript = get_field_string(p, scriptnode, NULL);
 	}
 
-	L = lua_init(&swcfg->bootloader);
+	L = lua_session_init(&swcfg->bootloader);
 
 	if (swcfg->embscript) {
 		if (!L) {

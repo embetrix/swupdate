@@ -111,6 +111,7 @@ static struct option long_options[] = {
 	{"no-state-marker", no_argument, NULL, 'm'},
 	{"no-transaction-marker", no_argument, NULL, 'M'},
 	{"output", required_argument, NULL, 'o'},
+	{"gen-swversions", required_argument, NULL, 's'},
 	{"preupdate", required_argument, NULL, 'P'},
 	{"postupdate", required_argument, NULL, 'p'},
 	{"select", required_argument, NULL, 'e'},
@@ -173,6 +174,7 @@ static void usage(char *programname)
 		" -M, --no-transaction-marker    : disable setting bootloader transaction marker\n"
 		" -m, --no-state-marker          : disable setting update state in bootloader\n"
 		" -o, --output <filename>        : saves the incoming stream\n"
+		" -s, --gen-swversions <filename>: generate sw-versions file after successful installation\n"
 		" -v, --verbose                  : be verbose, set maximum loglevel\n"
 		"     --version                  : print SWUpdate version and exit\n"
 #ifdef CONFIG_HW_COMPATIBILITY
@@ -320,14 +322,16 @@ static int read_globals_settings(void *elem, void *data)
 				"preupdatecmd", sw->preupdatecmd);
 	GET_FIELD_STRING(LIBCFG_PARSER, elem,
 				"namespace-vars", sw->namespace_for_vars);
+	GET_FIELD_STRING(LIBCFG_PARSER, elem,
+				"gen-swversions", sw->output_swversions);
 	if (strlen(sw->namespace_for_vars)) {
 		if (!swupdate_set_default_namespace(sw->namespace_for_vars))
 			WARN("Default Namaspace for SWUpdate vars cannot be set, possible side-effects");
 	}
 
-	get_field(LIBCFG_PARSER, elem, "verbose", &sw->verbose);
-	get_field(LIBCFG_PARSER, elem, "loglevel", &sw->loglevel);
-	get_field(LIBCFG_PARSER, elem, "syslog", &sw->syslog_enabled);
+	GET_FIELD_BOOL(LIBCFG_PARSER, elem, "verbose", &sw->verbose);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "loglevel", &sw->loglevel);
+	GET_FIELD_BOOL(LIBCFG_PARSER, elem, "syslog", &sw->syslog_enabled);
 	GET_FIELD_STRING(LIBCFG_PARSER, elem,
 				"no-downgrading", sw->minimum_version);
 	tmp[0] = '\0';
@@ -475,7 +479,7 @@ int main(int argc, char **argv)
 #endif
 	memset(main_options, 0, sizeof(main_options));
 	memset(image_url, 0, sizeof(image_url));
-	strcpy(main_options, "vhni:e:gq:l:Lcf:p:P:o:N:R:MmB:");
+	strcpy(main_options, "vhni:e:gq:l:Lcf:p:P:o:s:N:R:MmB:");
 #ifdef CONFIG_MTD
 	strcat(main_options, "b:");
 #endif
@@ -622,6 +626,9 @@ int main(int argc, char **argv)
 			break;
 		case 'o':
 			strlcpy(swcfg.output, optarg, sizeof(swcfg.output));
+			break;
+		case 's':
+			strlcpy(swcfg.output_swversions, optarg, sizeof(swcfg.output_swversions));
 			break;
 		case 'B':
 			if (set_bootloader(optarg) != 0) {
@@ -854,12 +861,12 @@ int main(int argc, char **argv)
 		}
 	}
 
-	lua_handlers_init(NULL);
+	lua_init();
 
 	if(!get_hw_revision(&swcfg.hw))
 		INFO("Running on %s Revision %s", swcfg.hw.boardname, swcfg.hw.revision);
 
-	print_registered_handlers();
+	print_registered_handlers(true);
 	if (swcfg.syslog_enabled) {
 		if (syslog_init()) {
 			ERROR("failed to initialize syslog notifier");
@@ -990,5 +997,6 @@ int main(int argc, char **argv)
 	if (!opt_c && !opt_i)
 		pthread_join(network_daemon, NULL);
 
+	free(cfgfname);
 	return exit_code;
 }
