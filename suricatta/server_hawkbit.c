@@ -868,17 +868,22 @@ static void get_action_id_from_env(int *action_id)
 	 * stored.
 	 */
 	char *action_str = swupdate_vars_get("action_id", NULL);
-	if (action_str) {
-		int tmp = ustrtoull(action_str, NULL, 10);
-		/*
-		 * action_id = 0 is invalid, then check it
-		 */
-		if (tmp > 0) {
-			*action_id = tmp;
-			TRACE("Retrieve action_id from previous run: %d", *action_id);
-		}
-		free(action_str);
+	if (!action_str) {
+		WARN("Action id not in env: action from server sent, possible mismatch ");
+		return;
 	}
+	int tmp = ustrtoull(action_str, NULL, 10);
+	if (errno)
+		WARN("action_id %s: ustrtoull failed",
+		     action_str);
+	/*
+	 * action_id = 0 is invalid, then check it
+	 */
+	if (tmp > 0) {
+		*action_id = tmp;
+		TRACE("Retrieve action_id from previous run: %d", *action_id);
+	}
+	free(action_str);
 }
 
 server_op_res_t server_handle_initial_state(update_state_t stateovrrd)
@@ -999,7 +1004,12 @@ static void *process_notification_thread(void *data)
 		bool data_avail = false;
 		int ret = ipc_get_status(&msg);
 
-		data_avail = ret > 0 && (strlen(msg.data.status.desc) != 0);
+		if (ret < 0) {
+			ERROR("Error getting status, stopping notification thread");
+			stop = true;
+		} else {
+			data_avail = (strlen(msg.data.status.desc) != 0);
+		}
 
 		/*
 		 * Mutex used to synchronize end of the thread
@@ -1013,12 +1023,6 @@ static void *process_notification_thread(void *data)
 
 		if (data_avail && msg.data.status.current == PROGRESS)
 			continue;
-		/*
-		 * If there is a message
-		 * ret > 0: data available
-		 * ret == 0: TIMEOUT, no more messages
-		 * ret < 0 : ERROR, exit
-		 */
 		if (data_avail && numdetails < MAX_DETAILS) {
 			for (int c = 0; c < strlen(msg.data.status.desc); c++) {
 				switch (msg.data.status.desc[c]) {
@@ -1725,19 +1729,19 @@ static int server_hawkbit_settings(void *elem, void  __attribute__ ((__unused__)
 		mandatory_argument_count |= URL_BIT;
 	}
 
-	get_field(LIBCFG_PARSER, elem, "polldelay",
-		&server_hawkbit.polling_interval);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "polldelay",
+		(int *)&server_hawkbit.polling_interval);
 
-	get_field(LIBCFG_PARSER, elem, "initial-report-resend-period",
-		&server_hawkbit.initial_report_resend_period);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "initial-report-resend-period",
+		(int *)&server_hawkbit.initial_report_resend_period);
 
 	channel_settings(elem, &channel_data_defaults);
 
-	get_field(LIBCFG_PARSER, elem, "usetokentodwl",
+	GET_FIELD_BOOL(LIBCFG_PARSER, elem, "usetokentodwl",
 		&server_hawkbit.usetokentodwl);
 
-	get_field(LIBCFG_PARSER, elem, "connection-timeout",
-		&channel_data_defaults.connection_timeout);
+	GET_FIELD_INT(LIBCFG_PARSER, elem, "connection-timeout",
+		(int *)&channel_data_defaults.connection_timeout);
 
 	GET_FIELD_STRING_RESET(LIBCFG_PARSER, elem, "targettoken", tmp);
 	if (strlen(tmp))
@@ -1909,6 +1913,11 @@ static server_op_res_t server_start(const char *fname, int argc, char *argv[])
 		case 'n':
 			channel_data_defaults.max_download_speed =
 				(unsigned int)ustrtoull(optarg, NULL, 10);
+			if (errno) {
+				ERROR("max-download-speed %s: ustrtoull failed",
+				      optarg);
+				return SERVER_EINIT;
+			}
 			break;
 		/* Ignore not recognized options, they can be already parsed by the caller */
 		case '?':
@@ -2023,11 +2032,12 @@ static server_op_res_t server_activation_ipc(ipc_message *msg)
 	int action_id = -1;
 	if (json_data) {
 		action_id = json_object_get_int(json_data);
-	} else {
+	}
+	if (action_id <= 0) { /* 0 is not a valid action id */
 		get_action_id_from_env(&action_id);
 	}
 
-	if (action_id < 0) {
+	if (action_id <= 0) {
 		ERROR("No action_id passed into JSON message and no action:_id in env");
 		return SERVER_EERR;
 	}
@@ -2054,6 +2064,10 @@ static server_op_res_t server_activation_ipc(ipc_message *msg)
 		return  SERVER_EERR;
 	}
 
+	if (!json_data) {
+		ERROR("No details are passed, they are mandatory.");
+		return SERVER_EERR;
+	}
 	int numdetails = json_object_array_length(json_data);
 	const char **details = (const char **)malloc((numdetails + 1) * (sizeof (char *)));
 	if(!details)

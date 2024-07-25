@@ -20,6 +20,7 @@
 
 #ifdef CONFIG_PKCS11
 #include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/wc_pkcs11.h>
 // Exclude p11-kit's pkcs11.h to prevent conflicting with wolfssl's
@@ -41,6 +42,7 @@
 #include <openssl/cms.h>
 #elif defined(CONFIG_SSL_IMPL_WOLFSSL)
 #include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
 #include <wolfssl/openssl/bio.h>
 #include <wolfssl/openssl/objects.h>
 #include <wolfssl/openssl/err.h>
@@ -110,7 +112,7 @@ struct swupdate_digest {
 #endif
 #ifdef CONFIG_SIGALG_GPG
 	char *gpg_home_directory;
-	int verbose;
+	bool verbose;
 	char *gpgme_protocol;
 #endif
 };

@@ -29,6 +29,8 @@
 #define CPIO_NEWASCII 070701
 #define CPIO_CRCASCII 070702
 
+#define NPAD_BYTES(o) ((4 - (o % 4)) % 4)
+
 struct new_ascii_header
 {
   char c_magic[6];
@@ -60,3 +62,4 @@ int extract_cpio_header(int fd, struct filehdr *fhdr, unsigned long *offset);
 int extract_img_from_cpio(int fd, unsigned long offset, struct filehdr *fdh);
 void extract_padding(int fd);
 bool swupdate_verify_chksum(const uint32_t chk1, struct filehdr *fhdr);
+int fill_buffer(int fd, unsigned char *buf, unsigned int nbytes);

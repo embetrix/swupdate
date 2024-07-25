@@ -98,16 +98,26 @@ void unregister_session_handlers(void)
 	}
 }
 
-void print_registered_handlers(void)
+void print_registered_handlers(bool global)
 {
 	unsigned int i;
+	unsigned int count = 0;
 
 	if (!nr_installers)
 		return;
-
-	INFO("Registered handlers:");
+	/*
+	 * Invert logic to ask for session handlers
+	 */
+	bool noglobal = !global;
+	INFO("Registered %s handlers:", global ? "global" : "session");
 	for (i = 0; i < nr_installers; i++) {
-		INFO("\t%s", supported_types[i].desc);
+		if (noglobal == supported_types[i].noglobal) {
+			count++;
+			INFO("\t%s", supported_types[i].desc);
+		}
+	}
+	if (count == 0) {
+		INFO("\tnone registered.");
 	}
 }
 

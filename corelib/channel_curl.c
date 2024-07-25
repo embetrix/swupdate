@@ -307,7 +307,11 @@ char *channel_get_redirect_url(channel_t *this)
 channel_op_res_t channel_map_http_code(channel_t *this, long *http_response_code)
 {
 	char *url = NULL;
-	long protocol;
+#if LIBCURL_VERSION_NUM >= 0x75500
+	char *protocol = NULL;
+#else
+	long protocol = 0;
+#endif
 	channel_curl_t *channel_curl = this->priv;
 	CURLcode curlrc =
 	    curl_easy_getinfo(channel_curl->handle, CURLINFO_RESPONSE_CODE,
@@ -329,7 +333,14 @@ channel_op_res_t channel_map_http_code(channel_t *this, long *http_response_code
 					   CURLINFO_PROTOCOL,
 				#endif
 					   &protocol);
-		if (curlrc == CURLE_OK && protocol == CURLPROTO_FILE) {
+		if (curlrc == CURLE_OK
+#if LIBCURL_VERSION_NUM >= 0x75500
+				&& protocol
+				&& !strcasecmp(protocol, "file")
+#else
+				&& protocol == CURLPROTO_FILE
+#endif
+		) {
 			return CHANNEL_OK;
 		}
 		DEBUG("No HTTP response code has been received yet!");
@@ -404,6 +415,7 @@ channel_op_res_t channel_map_curl_error(CURLcode res)
 	case CURLE_COULDNT_CONNECT:
 	case CURLE_INTERFACE_FAILED:
 	case CURLE_USE_SSL_FAILED:
+	case CURLE_HTTP2_STREAM:
 		return CHANNEL_ENONET;
 	case CURLE_OPERATION_TIMEDOUT:
 	case CURLE_SEND_ERROR:
@@ -599,6 +611,9 @@ channel_op_res_t channel_set_options(channel_t *this, channel_data_t *channel_da
 	    (curl_easy_setopt(channel_curl->handle,
 			      CURLOPT_SSLKEY,
 			      channel_data->sslkey) != CURLE_OK) ||
+	    (curl_easy_setopt(channel_curl->handle,
+			      CURLOPT_KEYPASSWD,
+			      channel_data->sslkeypassword) != CURLE_OK) ||
 	    (curl_easy_setopt(channel_curl->handle,
 			      CURLOPT_SSLCERT,
 			      channel_data->sslcert) != CURLE_OK) ||

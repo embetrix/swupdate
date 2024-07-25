@@ -24,7 +24,6 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <ctype.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
@@ -39,7 +38,6 @@
 #include <sys/mman.h>
 #include "delta_handler.h"
 #include "multipart_parser.h"
-#include "installer.h"
 #include "zchunk_range.h"
 #include "chained_handler.h"
 #include "swupdate_image.h"
@@ -328,10 +326,13 @@ static int delta_retrieve_attributes(struct img_type *img, struct hnd_priv *priv
 	char *srcsize;
 	srcsize = dict_get_value(&img->properties, "source-size");
 	if (srcsize) {
-		if (!strcmp(srcsize, "detect"))
+		if (!strcmp(srcsize, "detect")) {
 			priv->detectsrcsize = true;
-		else
+		} else {
 			priv->srcsize = ustrtoull(srcsize, NULL, 10);
+			if (errno)
+				WARN("source-size %s: ustrotull failed", srcsize);
+		}
 	}
 
 	char *zckloglevel = dict_get_value(&img->properties, "zckloglevel");
@@ -509,7 +510,10 @@ static bool create_zckindex(zckCtx *zck, int fd, size_t maxbytes)
 	}
 
 	free(buf);
-	zck_end_chunk(zck);
+	if (zck_end_chunk(zck) < 0) {
+		ERROR("ZCK failed to create chunk boundary: %s", zck_get_error(zck));
+		return false;
+	}
 
 	if(n < 0) {
 		ERROR("Error occurred while reading data : %s", strerror(errno));
@@ -756,7 +760,7 @@ static bool copy_network_chunks(zckChunk **dstChunk, struct hnd_priv *priv)
 					return false;
 				}
 			}
-			if ((answer->type == RANGE_DATA)) {
+			if (answer->type == RANGE_DATA) {
 				priv->dwlstate = WAITING_FOR_BOUNDARY;
 			}
 			break;
@@ -785,7 +789,7 @@ static bool copy_network_chunks(zckChunk **dstChunk, struct hnd_priv *priv)
 			if (!read_and_validate_package(priv))
 				return false;
 			answer = priv->answer;
-			if ((answer->type == RANGE_COMPLETED)) {
+			if (answer->type == RANGE_COMPLETED) {
 				priv->dwlstate = END_TRANSFER;
 			} else if (!fill_buffers_list(priv))
 				return false;
@@ -995,18 +999,7 @@ static int install_delta(struct img_type *img,
 		goto cleanup;
 	}
 
-	ret = copyfile(img->fdin,
-		&mem_fd,
-		img->size,
-		(unsigned long *)&img->offset,
-		img->seek,
-		0,
-		img->compressed,
-		&img->checksum,
-		img->sha256,
-		img->is_encrypted,
-		img->ivt_ascii,
-		NULL);
+	ret = copyimage(&mem_fd, img, NULL /* default write callback */);
 
 	if (ret != 0) {
 		ERROR("Error %d copying zchunk header, aborting.", ret);
