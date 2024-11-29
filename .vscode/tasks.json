@@ -1,0 +1,74 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "configure",
+			"command": "make",
+			"group": "build",
+			"problemMatcher": [],
+			"detail": "Configure Swupdate using menuconfig",
+			"args": [
+				"menuconfig"
+			],
+		},
+		{
+			"type": "shell",
+			"label": "clean",
+			"command": "make",
+			"group": "build",
+			"problemMatcher": [],
+			"detail": "Clean Swupdate build",
+			"args": [
+				"clean"
+			],
+		},
+		{
+			"type": "shell",
+			"label": "compile",
+			"command": "make",
+			"group": "build",
+			"problemMatcher": [],
+			"detail": "Compile Swupdate (native)",
+			"args": [
+				"-j"
+			],
+		},
+		{
+			"type": "shell",
+			"label": "cross compile armhf",
+			"command": "make",
+			"group": "build",
+			"problemMatcher": [],
+			"detail": "Cross-Compile Swupdate for armhf",
+			"args": [
+				"-j"
+			],
+			"options": {
+				"env": {
+					"CC": "arm-linux-gnueabihf-gcc",
+					"LD": "arm-linux-gnueabihf-gcc",
+					"CROSS_COMPILE": "arm-linux-gnueabihf-"
+				}
+			}
+		},
+		{
+			"type": "shell",
+			"label": "cross compile aarch64",
+			"command": "make",
+			"group": "build",
+			"problemMatcher": [],
+			"detail": "Cross-Compile Swupdate for aarch64",
+			"args": [
+				"-j"
+			],
+			"options": {
+				"env": {
+					"CC": "aarch64-linux-gnu-gcc",
+					"LD": "aarch64-linux-gnu-gcc",
+					"CROSS_COMPILE": "aarch64-linux-gnu-"
+				}
+			}
+		}
+	]
+}

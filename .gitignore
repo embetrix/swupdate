@@ -127,6 +127,10 @@ web-app/swupdate-www.tar.gz
 !.gitlab-ci.yml
 !.github
 
+# vscode
+!.devcontainer
+!.vscode
+
 # swupdateclient
 Pipfile
 Pipfile.lock
